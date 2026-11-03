@@ -13,61 +13,221 @@ OUTPUT_DIR = "output"
 SCENE_DIR = os.path.join(OUTPUT_DIR, "scenes")
 os.makedirs(SCENE_DIR, exist_ok=True)
 
-# 選用高親和力、極適合說可愛故事的微軟神經網路語音
-VOICE_NAME = "en-US-AnaNeural"  # 活潑可愛童話感英語女聲 (亦可改為 en-US-AriaNeural 或 zh-TW-HsiaoChenNeural)
+# 8 大高流量視覺畫風池（每次執行自動隨機抽一種，整支影片 4 幕保持統一畫風，但每支新片風格都不同！）
+VISUAL_STYLES = [
+    {
+        "name": "吉卜力手繪動畫風 (Studio Ghibli Anime)",
+        "prompt_prefix": "Studio Ghibli hand-drawn anime style by Hayao Miyazaki, lush painted backgrounds, warm nostalgic sunlight, expressive charming details, vertical 9:16 aspect ratio, masterpiece, no text"
+    },
+    {
+        "name": "8K 超寫實國家地理攝影風 (8K National Geographic Photorealism)",
+        "prompt_prefix": "8K ultra-photorealistic National Geographic wildlife photography, shot on 85mm f/1.4 lens, cinematic natural golden hour lighting, razor-sharp fur and eye reflections, shallow depth of field, vertical 9:16, no text"
+    },
+    {
+        "name": "定格黏土動畫風 (Stop-Motion Claymation)",
+        "prompt_prefix": "Charming stop-motion plasticine claymation style like Aardman Studio, handcrafted tactile clay textures, miniature studio warm lighting, tilt-shift depth of field, vertical 9:16, no text"
+    },
+    {
+        "name": "羊毛氈與微縮模型風 (Needle-Felted Wool Miniature)",
+        "prompt_prefix": "Ultra-cozy needle-felted wool craft style inside a miniature wooden diorama, soft fuzzy felt fibers, warm fairy lights bokeh in background, macro photography, vertical 9:16, no text"
+    },
+    {
+        "name": "溫暖童話水彩繪本風 (Whimsical Watercolor Storybook)",
+        "prompt_prefix": "Award-winning children's storybook watercolor and pastel illustration, soft dreamy paper texture, gentle warm brush strokes, magical heartwarming atmosphere, vertical 9:16, no text"
+    },
+    {
+        "name": "賽博龐克奇幻霓虹萌寵風 (Cozy Cyberpunk Neon)",
+        "prompt_prefix": "Cozy futuristic cyberpunk street at night, glowing warm neon lanterns reflecting in puddles, cinematic Unreal Engine 5 render, magical bioluminescent accents, vertical 9:16, no text"
+    },
+    {
+        "name": "樂高積木微縮世界風 (Macro LEGO Brick World)",
+        "prompt_prefix": "Macro photography of a detailed LEGO brick miniature world, glossy plastic bricks, cinematic studio lighting, shallow depth of field, playful and creative, vertical 9:16, no text"
+    },
+    {
+        "name": "3D 夢工廠皮克斯電影風 (3D Cinema Animation)",
+        "prompt_prefix": "3D Pixar and DreamWorks feature film animation style, expressive eyes, subsurface scattering, rich cinematic lighting, vertical 9:16, no text"
+    }
+]
+
+# 10 大多元療癒與奇幻主角池（不再只有固定貓咪，涵蓋水豚、海獺、小紅貓熊、柯基、企鵝、奇幻生物與貓狗互動）
+SUBJECT_THEMES = [
+    {
+        "subject": "a chill Capybara running a cozy forest hot spring inn with yuzu fruits",
+        "tag_group": ["capybara", "cuteanimals", "wholesome", "relaxing", "shorts"]
+    },
+    {
+        "subject": "a clumsy baby Red Panda discovering a glowing magical bamboo lantern in the misty mountains",
+        "tag_group": ["redpanda", "cuteanimals", "wildlife", "magical", "shorts"]
+    },
+    {
+        "subject": "two fluffy baby Sea Otters holding paws while floating in a crystal-clear sunset bay",
+        "tag_group": ["seaotter", "babyanimals", "oceans", "wholesome", "shorts"]
+    },
+    {
+        "subject": "a chubby Corgi barista serving tiny acorn lattes to woodland squirrels from a vintage food truck",
+        "tag_group": ["corgi", "puppy", "doglover", "cozyvibes", "shorts"]
+    },
+    {
+        "subject": "a tiny fluffy Emperor Penguin chick seeing the glowing green Northern Lights for the first time",
+        "tag_group": ["penguin", "antarctica", "cuteanimals", "aurora", "shorts"]
+    },
+    {
+        "subject": "a miniature Hedgehog postman wearing a tiny satchel delivering love letters across a mushroom village",
+        "tag_group": ["hedgehog", "miniature", "fairycore", "cute", "shorts"]
+    },
+    {
+        "subject": "a Golden Retriever puppy and a tiny yellow duckling sharing a leaf umbrella during a summer sunshower",
+        "tag_group": ["goldenretriever", "duckling", "animalfriendship", "wholesome", "shorts"]
+    },
+    {
+        "subject": "a curious stray kitten and a wise baby Barn Owl guarding an ancient floating library",
+        "tag_group": ["kitten", "owl", "fantasyart", "cutepets", "shorts"]
+    },
+    {
+        "subject": "a brave Shiba Inu aviator flying a tiny wooden biplane through cotton-candy sunset clouds",
+        "tag_group": ["shibainu", "dogvideos", "adventure", "cute", "shorts"]
+    },
+    {
+        "subject": "a tiny baby Sea Turtle swimming alongside friendly glowing bioluminescent jellyfish in a starry ocean",
+        "tag_group": ["seaturtle", "oceanlife", "aesthetic", "nature", "shorts"]
+    }
+]
+
+# 多元微軟高擬真神經網路配音池（依故事隨機搭配不同說書人聲線）
+VOICE_POOL = [
+    "en-US-AnaNeural",          # 活潑童話感女聲
+    "en-US-AriaNeural",         # 溫暖自然故事女聲
+    "en-GB-SoniaNeural",        # 優雅英式繪本女聲
+    "en-US-BrianNeural"         # 溫柔磁性說書男聲
+]
 
 
 def get_next_story():
     """
-    優先檢查是否有設定 GEMINI_API_KEY 自動發想全新可愛貓咪故事；
-    若無設定，則自動從 topics_queue.json 輪播挑選高完播劇本。
+    每次執行自動隨機抽取「視覺畫風」+「主角題材」，
+    並呼叫免金鑰 AI 接口 (https://text.pollinations.ai/openai，或自訂 OPENAI_API_KEY)
+    動態生成全新的 4 幕劇本與對應風格的分鏡圖提示詞！
     """
-    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if gemini_key:
+    chosen_style = random.choice(VISUAL_STYLES)
+    chosen_topic = random.choice(SUBJECT_THEMES)
+    chosen_voice = random.choice(VOICE_POOL)
+
+    print(f"🎨 本次隨機選中畫風: {chosen_style['name']}")
+    print(f"🐾 本次隨機選中題材: {chosen_topic['subject']}")
+    print(f"🎙️ 本次搭配配音聲線: {chosen_voice}")
+
+    prompt = (
+        f"Create a heartwarming, high-retention 4-scene YouTube Short script about: {chosen_topic['subject']}. "
+        f"The visual art style for ALL 4 scenes MUST strictly follow: '{chosen_style['prompt_prefix']}'. "
+        "Suitable for a general family & animal-lover audience (wholesome, emotional, engaging). "
+        "Return strictly valid JSON (no markdown fences) with keys: "
+        "id (string), theme (string), hook (string), title (catchy YouTube Short title under 85 chars with emojis and #shorts), "
+        "description (string with hashtags), tags (list of 6 strings), and scenes (list of exactly 4 objects, "
+        "each with 'narration' (15-22 words of spoken English storytelling) and "
+        "'image_prompt' (must start with the exact visual style prefix and describe the scene vividly in vertical 9:16 with no text))."
+    )
+
+    # 1. 優先檢查使用者是否有設定自訂的 OPENAI_API_KEY / GROQ_API_KEY
+    custom_key = os.environ.get("AI_API_KEY", "").strip() or os.environ.get("OPENAI_API_KEY", "").strip()
+    api_url = os.environ.get("AI_BASE_URL", "https://api.openai.com/v1/chat/completions").strip()
+    api_model = os.environ.get("AI_MODEL", "gpt-4o-mini").strip()
+
+    if custom_key:
         try:
-            from google import genai
-            client = genai.Client(api_key=gemini_key)
-            prompt = (
-                "Create a heartwarming, high-retention 4-scene YouTube Short script about an adorable cat or kitten "
-                "(suitable for all ages, general family audience, wholesome Pixar style). "
-                "Return strictly valid JSON with keys: "
-                "id, theme, hook, title, description, tags (list of strings), and scenes (list of 4 objects, "
-                "each with 'narration' (15-22 words) and 'image_prompt' (detailed 3D Pixar Disney animation style prompt, vertical 9:16, no text))."
+            resp = requests.post(
+                api_url,
+                headers={"Authorization": f"Bearer {custom_key}", "Content-Type": "application/json"},
+                json={
+                    "model": api_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": {"type": "json_object"}
+                },
+                timeout=40
             )
-            resp = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-                config={"response_mime_type": "application/json"}
-            )
-            story = json.loads(resp.text)
-            print(f"[AI 劇本生成成功] 主題: {story.get('title')}")
-            return story
+            if resp.status_code == 200:
+                story = json.loads(resp.json()["choices"][0]["message"]["content"])
+                story["voice"] = chosen_voice
+                print(f"[自訂 AI 模型劇本生成成功] 標題: {story.get('title')}")
+                return story
         except Exception as e:
-            print(f"[提示] Gemini 動態生成略過 ({e})，改用內建精選爆款劇本庫。")
+            print(f"[提示] 自訂 API 呼叫略過 ({e})，切換至免金鑰 AI 接口。")
 
-    with open("topics_queue.json", "r", encoding="utf-8") as f:
-        stories = json.load(f)
-    story = random.choice(stories)
-    print(f"[載入精選劇本] 主題: {story.get('title')}")
-    return story
+    # 2. 免金鑰 Pollinations OpenAI 接口 (預設完全免費、免填 Key、不使用 gemini-2.5-flash)
+    try:
+        resp = requests.post(
+            "https://text.pollinations.ai/openai",
+            json={
+                "model": "openai",
+                "seed": random.randint(1, 999999),
+                "messages": [
+                    {"role": "system", "content": "You are a viral YouTube Shorts creative director. Output raw valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                "response_format": {"type": "json_object"}
+            },
+            timeout=40
+        )
+        if resp.status_code == 200:
+            raw_text = resp.json()["choices"][0]["message"]["content"].strip()
+            if raw_text.startswith("```"):
+                raw_text = raw_text.strip("`").removeprefix("json").strip()
+            story = json.loads(raw_text)
+            story["voice"] = chosen_voice
+            # 確保每一幕都帶上隨機抽中的視覺風格前綴
+            for sc in story.get("scenes", []):
+                if chosen_style["prompt_prefix"][:25].lower() not in sc.get("image_prompt", "").lower():
+                    sc["image_prompt"] = f"{chosen_style['prompt_prefix']}, {sc.get('image_prompt', '')}"
+            print(f"[免金鑰 AI 動態劇本生成成功] 標題: {story.get('title')}")
+            return story
+    except Exception as e:
+        print(f"[提示] 雲端即時編劇忙碌 ({e})，啟動動態風格模板合成。")
+
+    # 3. 動態風格保底合成器（即使外部文字 API 瞬斷，依然能用本次抽中的畫風與主角生成全新 4 幕劇本）
+    sp = chosen_style["prompt_prefix"]
+    subj = chosen_topic["subject"]
+    return {
+        "id": f"AUTO_{int(time.time())}",
+        "theme": f"{chosen_style['name']} - {subj}",
+        "voice": chosen_voice,
+        "title": f"Wait Until the End! Wholesome {chosen_topic['tag_group'][0].capitalize()} Story ✨🐾 #shorts #cute",
+        "description": f"Experience this heartwarming story in {chosen_style['name']}! 🐾✨\n\n#shorts #wholesome #cuteanimals #animation #storytime",
+        "tags": chosen_topic["tag_group"],
+        "scenes": [
+            {
+                "narration": f"Nobody expected what happened when we discovered {subj} early this morning.",
+                "image_prompt": f"{sp}, wide establishing shot of {subj}, magical morning atmosphere, expressive emotion"
+            },
+            {
+                "narration": "At first, everyone watched quietly from a distance, amazed by every tiny gentle movement.",
+                "image_prompt": f"{sp}, close-up portrait of {subj}, sparkling eyes, heartwarming and curious expression"
+            },
+            {
+                "narration": "Then came the sweetest moment of pure joy that melted every single heart watching.",
+                "image_prompt": f"{sp}, dynamic joyful action shot of {subj}, surrounded by warm golden light and gentle sparkles"
+            },
+            {
+                "narration": "Moments like this remind us how magical the world can be! Subscribe if this made you smile today!",
+                "image_prompt": f"{sp}, peaceful cozy finale of {subj} resting happily under warm glowing light"
+            }
+        ]
+    }
 
 
-async def generate_tts(text: str, audio_path: str):
+async def generate_tts(text: str, audio_path: str, voice_name: str):
     """使用免費 Edge-TTS 產出高擬真語音"""
-    communicate = edge_tts.Communicate(text, VOICE_NAME, rate="+5%", pitch="+2Hz")
+    communicate = edge_tts.Communicate(text, voice_name, rate="+3%")
     await communicate.save(audio_path)
 
 
 def generate_ai_image(prompt: str, img_path: str, seed: int):
     """
-    使用免金鑰 Pollinations Flux 模型生成 1080x1920 (9:16) 高畫質 3D 皮克斯風可愛貓咪插圖。
-    具備自動重試與保底漸層可愛圖卡機制，確保雲端 100% 不中斷。
+    使用免金鑰 Pollinations Flux 模型生成 1080x1920 (9:16) 對應隨機畫風的高畫質插圖。
     """
     encoded_prompt = urllib.parse.quote(prompt)
     url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1080&height=1920&seed={seed}&nologo=true&model=flux"
     for attempt in range(3):
         try:
-            resp = requests.get(url, timeout=45)
+            resp = requests.get(url, timeout=50)
             if resp.status_code == 200 and len(resp.content) > 10000:
                 with open(img_path, "wb") as f:
                     f.write(resp.content)
@@ -76,22 +236,18 @@ def generate_ai_image(prompt: str, img_path: str, seed: int):
             print(f"  [算圖重試 {attempt+1}/3] {e}")
             time.sleep(3)
 
-    # 保底機制：若外部免費算圖伺服器忙碌，自動繪製高質感暖色插畫背景
-    img = Image.new("RGB", (1080, 1920), color=(255, 228, 196))
+    img = Image.new("RGB", (1080, 1920), color=(35, 40, 60))
     draw = ImageDraw.Draw(img)
-    draw.rectangle([60, 60, 1020, 1860], outline=(255, 160, 122), width=12)
+    draw.rectangle([60, 60, 1020, 1860], outline=(255, 200, 120), width=10)
     img.save(img_path)
 
 
 def overlay_subtitle_on_image(img_path: str, subtitle_text: str):
-    """
-    在分鏡圖下方黃金視覺區繪製高對比圓角字幕卡，確保無須複雜 ASS 字幕濾鏡也能 100% 跨平台完美顯示。
-    """
+    """在分鏡圖下方繪製高對比圓角字幕卡"""
     img = Image.open(img_path).convert("RGBA").resize((1080, 1920))
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    # 自動斷行 (每行約 26 個字元)
     words = subtitle_text.split()
     lines, current = [], ""
     for w in words:
@@ -113,8 +269,8 @@ def overlay_subtitle_on_image(img_path: str, subtitle_text: str):
     draw.rounded_rectangle(
         [70, box_top, 1010, box_bottom],
         radius=32,
-        fill=(20, 20, 25, 195),
-        outline=(255, 215, 0, 230),
+        fill=(18, 18, 24, 195),
+        outline=(255, 215, 100, 230),
         width=4
     )
 
@@ -142,7 +298,7 @@ def get_audio_duration(audio_path: str) -> float:
 
 
 def render_scene_clip(img_path: str, audio_path: str, clip_path: str):
-    """使用 FFmpeg 將單張分鏡圖加上微幅平滑縮放 (Ken Burns) 與配音合成為 MP4 片段"""
+    """使用 FFmpeg 將單張分鏡圖加上平滑運鏡與配音合成為 MP4 片段"""
     duration = get_audio_duration(audio_path) + 0.25
     cmd = [
         "ffmpeg", "-y",
@@ -160,6 +316,7 @@ def render_scene_clip(img_path: str, audio_path: str, clip_path: str):
 
 def main():
     story = get_next_story()
+    voice_name = story.get("voice", "en-US-AnaNeural")
     clip_files = []
 
     for idx, scene in enumerate(story["scenes"], start=1):
@@ -168,13 +325,12 @@ def main():
         audio_path = os.path.join(SCENE_DIR, f"scene_{idx}.mp3")
         clip_path = os.path.join(SCENE_DIR, f"clip_{idx}.mp4")
 
-        asyncio.run(generate_tts(scene["narration"], audio_path))
+        asyncio.run(generate_tts(scene["narration"], audio_path, voice_name))
         generate_ai_image(scene["image_prompt"], img_path, seed=random.randint(1000, 999999))
         overlay_subtitle_on_image(img_path, scene["narration"])
         render_scene_clip(img_path, audio_path, clip_path)
         clip_files.append(clip_path)
 
-    # 合併所有分鏡片段為最終 9:16 YouTube Short
     concat_txt = os.path.join(SCENE_DIR, "concat_list.txt")
     with open(concat_txt, "w", encoding="utf-8") as f:
         for cp in clip_files:
@@ -190,7 +346,7 @@ def main():
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(story, f, ensure_ascii=False, indent=2)
 
-    print(f"✅ YouTube Short 影片合成完畢: {final_mp4}")
+    print(f"✅ 多元風格 YouTube Short 影片合成完畢: {final_mp4}")
 
 
 if __name__ == "__main__":
