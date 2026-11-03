@@ -1,0 +1,55 @@
+name: Daily Cute Cat YouTube Shorts Factory
+
+on:
+  schedule:
+    # 每天台灣時間晚上 20:00 (UTC 12:00) 雲端全自動產片並發佈
+    - cron: '0 12 * * *'
+  workflow_dispatch: # 隨時可手動按按鈕發片
+
+jobs:
+  generate-and-upload-short:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: 1. 檢出程式庫 (Checkout)
+        uses: actions/checkout@v4
+
+      - name: 2. 安裝系統 FFmpeg 與字體庫
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-liberation fonts-noto-cjk
+
+      - name: 3. 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 4. 安裝相依套件
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 5. AI 即時捕捉演算法熱點並合成短片
+        env:
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+        run: |
+          python main.py
+
+      - name: 6. 自動上傳至指定新頻道 UC5P8yj_8TUhOrFsdp0qn-IQ
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+        run: |
+          python upload_youtube.py
+
+      - name: 7. 備份產出之成品影片至 Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-cat-short-${{ github.run_number }}
+          path: |
+            output/final_short.mp4
+            output/metadata.json
+          retention-days: 7
