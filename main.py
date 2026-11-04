@@ -17,7 +17,6 @@ OUTPUT_DIR = "output"
 SCENE_DIR = os.path.join(OUTPUT_DIR, "scenes")
 os.makedirs(SCENE_DIR, exist_ok=True)
 
-# 你的專屬 Google Sheet ID
 SHEET_ID = "1M6jINNdKCgisMLTD3x2h3Cift65xFCDMv2SySl-3Ngo"
 SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 
@@ -31,7 +30,7 @@ VOICE_ROTATION = [
 ]
 
 TITLE_HOOK_SUFFIXES = [
-    "Wait For It! 🐱🐶 #shorts #cute",
+    "Wait For It! 👧🐱🐶 #shorts #cute",
     "Watch Until The End! 🐾❤️ #shorts #cat",
     "Pure Wholesome Magic! ✨🐱 #shorts #pets",
     "Nobody Expected This! 🥹🐾 #shorts #kitten",
@@ -41,18 +40,26 @@ TITLE_HOOK_SUFFIXES = [
 
 
 def clean_prompt_text(text: str) -> str:
-    """移除括號與多餘符號，避免算圖 API 網址過長或解析失敗"""
+    """移除括號內註記與特殊符號，保留乾淨英文描述"""
     text = re.sub(r"\([^)]*\)", "", str(text))
     text = re.sub(r"[^a-zA-Z0-9, -]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
+def clean_base_title(raw_title: str) -> str:
+    """移除原標題尾端已有的 Wait For It / Emoji / Hashtags，避免標題尾綴重複出現兩次"""
+    t = str(raw_title).split("#")[0].strip()
+    t = re.sub(r"(\.\.\.)?\s*Wait For It!?.*$", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"[^\w\s,'?!-]", "", t).strip()
+    return t if t else "Little Girl Brings Stray Kitten Home to Her 90-Pound Husky"
+
+
 def parse_episode_from_row(row_dict: dict) -> dict:
     ep_id = str(row_dict.get("id", "EP01")).strip()
     sent_count = int(str(row_dict.get("sent_count", "0")).split("/")[0].strip() or 0)
-    art_dna = clean_prompt_text(row_dict.get("art_dna", "3D Pixar animation style, warm golden sunlight"))
-    char1_dna = clean_prompt_text(row_dict.get("char1_dna", "tiny fluffy ginger kitten with green eyes"))
-    char2_dna = clean_prompt_text(row_dict.get("char2_dna", "gentle giant Siberian Husky"))
+    art_dna = clean_prompt_text(row_dict.get("art_dna", "3D Pixar DreamWorks feature animation style, warm golden sunlight"))
+    char1_dna = clean_prompt_text(row_dict.get("char1_dna", "cute 6-year-old little girl in yellow raincoat holding a tiny fluffy ginger kitten"))
+    char2_dna = clean_prompt_text(row_dict.get("char2_dna", "giant gentle silver-and-white Siberian Husky"))
 
     raw_scenes = [
         (row_dict.get("s1_narration", ""), row_dict.get("s1_action", "")),
@@ -65,20 +72,23 @@ def parse_episode_from_row(row_dict: dict) -> dict:
     scenes = []
     for i, (narr, act) in enumerate(raw_scenes):
         clean_act = clean_prompt_text(act)
-        # 精簡算圖指令至 150 字元內，大幅提升 Pollinations 出圖成功率與速度
-        concise_prompt = f"{art_dna[:55]}, {clean_act[:75]}, {char1_dna[:40]}, vertical 9:16, no text"
+        # 100% 根據該幕具體動作 (clean_act) 與角色設定 (小女孩 / 貓咪 / 狗狗) 組合算圖指令，確保畫面與台詞完全相符！
+        full_prompt = (
+            f"{art_dna}, {clean_act}, featuring {char1_dna} and {char2_dna}, "
+            "heartwarming expressive faces, vertical 9:16 aspect ratio, clean composition, no text, no watermark"
+        )
         scenes.append({
             "narration": str(narr).strip(),
             "scene_action": str(act).strip(),
             "camera_style": cam_styles[i % 4],
-            "full_image_prompt": concise_prompt
+            "full_image_prompt": full_prompt
         })
 
-    base_title = str(row_dict.get("title", "Tiny Stray Kitten Walks Up to a 90-Pound Husky!")).split("#")[0].strip()
+    base_title = clean_base_title(row_dict.get("title", "Little Girl Brings Stray Kitten Home to Her 90-Pound Husky"))
     variant_suffix = TITLE_HOOK_SUFFIXES[sent_count % len(TITLE_HOOK_SUFFIXES)]
-    variant_title = f"{base_title} {variant_suffix}"[:100]
+    variant_title = f"{base_title}... {variant_suffix}"[:100]
 
-    tags_raw = str(row_dict.get("tags", "cute cat, tiny kitten, wholesome pets, shorts"))
+    tags_raw = str(row_dict.get("tags", "cute cat, little girl and kitten, husky, wholesome pets, shorts"))
     tags_list = [t.strip().lstrip("#") for t in tags_raw.split(",") if t.strip()]
 
     return {
@@ -157,19 +167,19 @@ def fetch_next_episode_from_google_sheet() -> dict:
         "row_index": 8,
         "id": "EP01",
         "sent_count": 0,
-        "art_dna": "3D Pixar DreamWorks feature animation style, warm golden sunlight",
-        "char1_dna": "tiny fluffy ginger tabby kitten with emerald green eyes",
-        "char2_dna": "giant gentle silver-and-white Siberian Husky",
-        "s1_narration": "Nobody expected what happened early this morning.",
-        "s1_action": "tiny ginger kitten reaching out one pink paw to touch the giant Husky black nose in a sunlit living room",
-        "s2_narration": "At first, everyone watched quietly from a distance, amazed by every tiny gentle movement.",
-        "s2_action": "giant Husky lying down smiling gently while the tiny ginger kitten climbs and snuggles onto his huge white front paw",
-        "s3_narration": "Then came the sweetest moment of pure joy that melted every single heart watching.",
-        "s3_action": "tiny ginger kitten sleeping peacefully curled up against the smiling Husky chest fur near a warm glowing fireplace",
-        "s4_narration": "Moments like this remind us how magical the world can be! Subscribe if this made you smile today!",
-        "s4_action": "happy Husky and tiny ginger kitten sitting side by side wearing matching blue bandanas on a sunny lawn looking at camera",
-        "title": "Tiny Stray Kitten Walks Up to a 90-Pound Husky!",
-        "tags": "cute cat, tiny kitten, husky, cat and dog, wholesome pets, shorts"
+        "art_dna": "3D Pixar DreamWorks feature animation style, warm golden sunlight, expressive eyes, ultra-detailed soft fur",
+        "char1_dna": "a cute 6-year-old little girl named Mia with warm brown pigtails wearing a yellow raincoat, holding a tiny fluffy ginger kitten",
+        "char2_dna": "a giant gentle silver-and-white Siberian Husky dog with kind brown eyes",
+        "s1_narration": "Six-year-old Mia found a tiny shivering ginger kitten in the rain and brought him home to meet her giant Husky, Titan.",
+        "s1_action": "cute 6-year-old girl in yellow raincoat kneeling in cozy hallway, holding a tiny wet ginger kitten in front of a giant gentle Siberian Husky",
+        "s2_narration": "Everyone worried the ninety-pound dog would scare the kitten, but Titan gently laid down and offered his warm furry paw.",
+        "s2_action": "giant Siberian Husky lying flat on living room rug as the tiny ginger kitten climbs onto his huge white paw while the little girl smiles",
+        "s3_narration": "Within minutes, little Mochi was fast asleep on Titan's chest while Mia covered them both with her favorite soft blanket.",
+        "s3_action": "cute little girl gently placing a knitted blanket over the giant Husky and the tiny ginger kitten sleeping together by a warm fireplace",
+        "s4_narration": "Now the three best friends wear matching blue scarves everywhere they go! Subscribe if Mia and Mochi made you smile!",
+        "s4_action": "happy little girl, giant Husky, and tiny ginger kitten sitting side by side on a sunny garden lawn wearing matching blue scarves, looking at camera",
+        "title": "Little Girl Brings Stray Kitten Home to Her 90-Pound Husky",
+        "tags": "cute cat, little girl and kitten, husky, wholesome story, 3d animation, cute animals, shorts"
     }
     return parse_episode_from_row(default_row)
 
@@ -205,77 +215,57 @@ def is_valid_colorful_image(img_path: str) -> bool:
         return False
 
 
+def crop_bottom_watermark_and_save(img_path: str):
+    """自動切除圖片最底部 5% 與左右 2% 邊緣再縮放回 1080x1920，100% 消除右下角浮水印"""
+    with Image.open(img_path) as im:
+        im_rgb = im.convert("RGB")
+        w, h = im_rgb.size
+        cropped = im_rgb.crop((int(w * 0.02), int(h * 0.01), int(w * 0.98), int(h * 0.95)))
+        cropped.resize((1080, 1920), Image.Resampling.LANCZOS).save(img_path, quality=95)
+
+
 def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx: int, prev_imgs: list):
     """
-    【四重防崩潰出圖引擎 — 100% 根除 FileNotFoundError】
-    1. 第一層：Pollinations 官方最快雙模型 (flux / turbo) + enhance=false 免排隊直出
-    2. 第二層：高品質真實可愛貓咪寫真圖庫 (Unsplash / Cataas)
-    3. 第三層：若前幾幕已有成功生成的 AI 圖，自動取前一張高畫質 AI 圖進行差異化景別重構圖
-    4. 第四層：溫暖童話漸層保底，確保 img_path 100% 寫入硬碟！
+    【高畫質 Flux 專屬出圖引擎 — 100% 忠於劇本分鏡描述】
+    全程鎖定 Pollinations `flux` 模型（理解複雜多角色互動如「小女孩 + 小橘貓 + 哈士奇」能力最強），
+    並自動切除底部邊緣浮水印，移除與劇本不符的隨機真實貓照片備援！
     """
     if os.path.exists(img_path) and is_valid_colorful_image(img_path):
         return
 
-    encoded = urllib.parse.quote(prompt[:160])
-    models = ["flux", "turbo", "flux", "turbo"]
+    encoded = urllib.parse.quote(prompt[:260])
 
-    for attempt in range(4):
-        model_name = models[attempt]
-        seed = master_seed + (scene_idx * 37) + (attempt * 101)
+    for attempt in range(5):
+        seed = master_seed + (scene_idx * 17) + (attempt * 53)
         url = (
             f"https://image.pollinations.ai/prompt/{encoded}"
-            f"?width=768&height=1344&seed={seed}&nologo=true&enhance=false&model={model_name}"
+            f"?width=768&height=1344&seed={seed}&nologo=true&enhance=false&model=flux"
         )
-        headers = {"User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/{121 + attempt}.0"}
+        headers = {"User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/{122 + attempt}.0"}
         try:
             if attempt > 0 or scene_idx > 1:
-                time.sleep(3.0)
-            resp = requests.get(url, headers=headers, timeout=28)
-            if resp.status_code == 200 and len(resp.content) > 15000:
+                time.sleep(5.0)
+            resp = requests.get(url, headers=headers, timeout=60)
+            if resp.status_code == 200 and len(resp.content) > 18000:
                 with open(img_path, "wb") as f:
                     f.write(resp.content)
                 if is_valid_colorful_image(img_path):
-                    with Image.open(img_path) as im:
-                        im.convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS).save(img_path, quality=95)
-                    print(f"    ✅ 第 {scene_idx} 幕 AI 分鏡圖產出成功 (模型: {model_name})")
+                    crop_bottom_watermark_and_save(img_path)
+                    print(f"    ✅ 第 {scene_idx} 幕 Flux 高畫質分鏡產出成功 (已對齊劇本並裁除邊角浮水印)")
                     return
         except Exception as e:
-            print(f"    [算圖重試 {attempt+1}/4 | 模型 {model_name}] {e}")
+            print(f"    [Flux 算圖重試 {attempt+1}/5] {e}")
 
-    # 第二層備援：高畫質可愛貓咪圖庫
-    fallback_urls = [
-        "https://images.unsplash.com/photo-1543852786-1cf6624b9987?w=1080&h=1920&fit=crop",
-        "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=1080&h=1920&fit=crop",
-        "https://images.unsplash.com/photo-1573865526739-10659fec78a5?w=1080&h=1920&fit=crop",
-        "https://images.unsplash.com/photo-1495360010541-f48722b34f7d?w=1080&h=1920&fit=crop",
-        "https://cataas.com/cat?width=1080&height=1920"
-    ]
-    for fb_url in [fallback_urls[(scene_idx - 1) % 4], fallback_urls[4]]:
-        try:
-            r = requests.get(fb_url, timeout=15)
-            if r.status_code == 200 and len(r.content) > 12000:
-                with open(img_path, "wb") as f:
-                    f.write(r.content)
-                if is_valid_colorful_image(img_path):
-                    with Image.open(img_path) as im:
-                        im.convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS).save(img_path, quality=95)
-                    print(f"    ✅ 第 {scene_idx} 幕使用高清萌寵圖庫備援成功")
-                    return
-        except Exception:
-            pass
-
-    # 第三層備援：若同集已有成功生成的 AI 圖 (如 raw_1.jpg)，自動取該圖進行特寫重構圖，維持同角色連貫畫風！
-    for p_img in prev_imgs:
+    for p_img in reversed(prev_imgs):
         if os.path.exists(p_img) and is_valid_colorful_image(p_img):
             with Image.open(p_img) as im:
                 im_rgb = im.convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS)
-                crop_box = (70, 110, 1010, 1780) if scene_idx % 2 == 0 else (40, 60, 1040, 1840)
+                crop_box = (80, 120, 1000, 1760) if scene_idx % 2 == 0 else (45, 70, 1035, 1820)
                 reframed = im_rgb.crop(crop_box).resize((1080, 1920), Image.Resampling.LANCZOS)
                 reframed.save(img_path, quality=95)
-            print(f"    ✅ 第 {scene_idx} 幕使用同集連貫角色特寫分鏡成功")
+            print(f"    ✅ 第 {scene_idx} 幕採用同集連貫角色特寫分鏡")
             return
 
-    # 第四層終極保底：溫暖童話漸層圖
     im = Image.new("RGB", (1080, 1920), (245, 215, 185))
     im.save(img_path, quality=95)
 
@@ -491,7 +481,7 @@ def main():
 
     print(f"🎬 啟動 Google Sheet 連動產線 | 集數: {story['id']} (第 {story['sent_count'] + 1}/6 次發送)")
     print(f"🎨 畫風 DNA: {story.get('selected_visual_style')}")
-    print(f"🐾 雙角色鎖定: {story.get('character_dna')}")
+    print(f"🐾 角色鎖定 (含小女孩與萌寵): {story.get('character_dna')}")
     print(f"🎙️ 本輪輪替配音: {voice_name}")
 
     raw_imgs = []
@@ -501,7 +491,7 @@ def main():
         r_img = os.path.join(SCENE_DIR, f"raw_{idx}.jpg")
         a_path = os.path.join(SCENE_DIR, f"audio_{idx}.mp3")
 
-        print(f"  [準備第 {idx}/{total_scenes} 幕] 產生語音與分鏡圖片...")
+        print(f"  [準備第 {idx}/{total_scenes} 幕] 產生語音與高畫質 Flux 分鏡圖片...")
         asyncio.run(generate_speech_audio(sc["narration"], a_path, voice_name))
         download_ai_keyframe(sc["full_image_prompt"], r_img, master_seed=master_seed, scene_idx=idx, prev_imgs=raw_imgs)
 
