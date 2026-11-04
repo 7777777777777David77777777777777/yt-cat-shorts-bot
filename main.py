@@ -40,12 +40,117 @@ TITLE_HOOK_SUFFIXES = [
 ]
 
 
+SHEET_HEADERS = {
+    "id": "集數 ID",
+    "status": "發佈狀態",
+    "sent_count": "已發送次數",
+    "art_dna": "視覺畫風 DNA",
+    "char1_dna": "角色 1 設定",
+    "char2_dna": "角色 2 設定",
+    "char3_dna": "角色 3 設定",
+    "title": "YouTube 爆款標題",
+    "tags": "SEO 標籤",
+}
+for _scene_number in range(1, 5):
+    SHEET_HEADERS[f"s{_scene_number}_narration"] = f"第 {_scene_number} 幕：英文台詞"
+    SHEET_HEADERS[f"s{_scene_number}_action"] = f"第 {_scene_number} 幕：畫面動作"
+
+
+class NoPendingEpisodes(RuntimeError):
+    """片單已讀取成功，但沒有尚未完成的集數。"""
+
+
+class ImagePromptTooLongError(RuntimeError):
+    """產圖服務拒絕完整提示詞時停止，不能改用截斷內容。"""
+
+
+def parse_sent_count(value) -> int:
+    text = str(value).strip() if value is not None else ""
+    match = re.fullmatch(r"(\d+)(?:\.0+)?(?:\s*/\s*6)?", text or "0")
+    if not match or int(match[1]) > 6:
+        raise ValueError(f"已發送次數格式錯誤：{text!r}，應為 0～6 或 k/6")
+    return int(match[1])
+
+
+def validate_episode_row(row_dict: dict):
+    """拒絕舊 Webhook 的兩角色欄位錯位，避免把角色或動作當旁白。"""
+    if not isinstance(row_dict, dict):
+        raise ValueError("集數資料必須是三角色格式的物件")
+    required = set(SHEET_HEADERS) - {"status", "tags"}
+    missing = sorted(key for key in required
+                     if row_dict.get(key) is None or not str(row_dict[key]).strip())
+    if missing:
+        raise ValueError(f"缺少三角色片單必要欄位：{', '.join(missing)}；請更新 Sheet / Apps Script 欄位對應")
+    if not re.fullmatch(r"EP\d+", str(row_dict["id"]).strip(), flags=re.IGNORECASE):
+        raise ValueError("集數 ID 必須是 EP 加數字")
+    if re.match(r"^Scene\s*\d+\b|^第\s*\d+\s*幕", str(row_dict["title"]).strip(), re.IGNORECASE):
+        raise ValueError("標題讀到了 Scene 動作欄；請檢查 P 欄與 Webhook 對應")
+    for i in range(1, 5):
+        narration = str(row_dict[f"s{i}_narration"]).strip()
+        if re.match(r"^(?:Character\s*\d+|Scene\s*\d+)\s*[:：]|^角色\s*\d+", narration, re.IGNORECASE):
+            raise ValueError(f"第 {i} 幕台詞讀到了角色設定或動作欄；請檢查 H～O 欄與 Webhook 對應")
+    parse_sent_count(row_dict["sent_count"])
+
+
+def episode_from_sheet_csv(csv_text: str) -> dict:
+    """略過中控台摘要列，以第 7 列的欄名定位資料，不以總欄數猜測格式。"""
+    def normalize_header(value):
+        return re.sub(r"[\s\ufeff]+", "", value).casefold()
+
+    columns = None
+    for row_index, row in enumerate(csv.reader(io.StringIO(csv_text)), start=1):
+        if columns is None:
+            normalized = [normalize_header(cell) for cell in row]
+            if not any(cell in {normalize_header(SHEET_HEADERS["id"]), "id"} for cell in normalized):
+                continue
+            columns = {}
+            for key, label in SHEET_HEADERS.items():
+                matches = [i for i, cell in enumerate(normalized)
+                           if cell == key or cell.startswith(normalize_header(label))]
+                if len(matches) != 1:
+                    raise ValueError(f"Sheet 欄位缺少或重複：{label}；請使用三角色片單表頭")
+                columns[key] = matches[0]
+            continue
+        row_dict = {key: row[index].strip() if index < len(row) else ""
+                    for key, index in columns.items()}
+        if not re.fullmatch(r"EP\d+", row_dict["id"], flags=re.IGNORECASE):
+            continue
+        if "已完成" in row_dict["status"] or "completed" in row_dict["status"].casefold():
+            continue
+        row_dict["sent_count"] = parse_sent_count(row_dict["sent_count"])
+        if row_dict["sent_count"] >= 6:
+            continue
+        row_dict["row_index"] = row_index
+        return parse_episode_from_row(row_dict)
+    if columns is None:
+        raise ValueError("找不到 Sheet 表頭；請確認 CSV 可讀取且包含三角色片單")
+    raise NoPendingEpisodes("Sheet 所有集數均已完成，沒有待產生的影片。")
+
+
 def clean_prompt_text(text: str) -> str:
-    """移除多餘括號與特殊符號，保留清晰英文描述"""
-    text = re.sub(r"^Character\s*\d+\s*:\s*", "", str(text), flags=re.IGNORECASE)
-    text = re.sub(r"^Scene\s*\d+\s*:\s*", "", str(text), flags=re.IGNORECASE)
-    text = re.sub(r"[^a-zA-Z0-9, -]", " ", text)
+    """只清除來源標籤與多餘空白，保留標點、比例和完整角色描述。"""
+    text = str(text).strip()
+    text = re.sub(r"^(?:Character|Scene)\s*\d+\s*[:：]\s*", "", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def build_image_prompt(art_dna: str, characters: list, scene_action: str) -> str:
+    """依 Sheet 組成完整分鏡指令，不覆寫角色物種或畫風。"""
+    references = "\n".join(f"{i}. {description}" for i, description in enumerate(characters, start=1))
+    return (
+        f"Scene action: {scene_action}\n"
+        f"Visual style: {art_dna}\n"
+        f"Character references:\n{references}\n"
+        "Continuity: Keep each visible character's species, colors, markings, clothing "
+        "and relative size consistent with these references across all scenes. "
+        "Show only the characters involved in the scene action; the reference list "
+        "does not require every character to appear.\n"
+        "Shot and composition: Capture one clear moment of the scene action in a single image. "
+        "Follow any framing specified in the scene action; otherwise use a medium shot "
+        "at the subjects' eye level. Keep faces and key interactions away from the frame edges. "
+        "Leave the bottom 15% visually simple for subtitles. "
+        "Vertical 9:16 composition, clear subject separation, no lettering, captions or watermarks."
+    )
 
 
 def clean_base_title(raw_title: str) -> str:
@@ -59,12 +164,11 @@ def parse_episode_from_row(row_dict: dict) -> dict:
     """
     支援 18 欄「三角色獨立設定 (char1_dna, char2_dna, char3_dna) + 4 幕台詞與動作嚴格對齊」結構
     """
-    ep_id = str(row_dict.get("id", "EP01")).strip()
-    sent_count = int(str(row_dict.get("sent_count", "0")).split("/")[0].strip() or 0)
-    art_dna = clean_prompt_text(row_dict.get("art_dna", "3D Pixar animation style, warm cinematic lighting, ultra-detailed"))
-    char1_dna = clean_prompt_text(row_dict.get("char1_dna", "a cute 6-year-old girl with brown pigtails wearing a yellow raincoat"))
-    char2_dna = clean_prompt_text(row_dict.get("char2_dna", "a tiny fluffy orange tabby kitten with big green eyes"))
-    char3_dna = clean_prompt_text(row_dict.get("char3_dna", "a giant friendly silver-and-white Siberian Husky dog"))
+    validate_episode_row(row_dict)
+    ep_id = str(row_dict["id"]).strip()
+    sent_count = parse_sent_count(row_dict["sent_count"])
+    art_dna = clean_prompt_text(row_dict["art_dna"])
+    characters = [clean_prompt_text(row_dict[f"char{i}_dna"]) for i in range(1, 4)]
 
     raw_scenes = [
         (row_dict.get("s1_narration", ""), row_dict.get("s1_action", "")),
@@ -77,14 +181,7 @@ def parse_episode_from_row(row_dict: dict) -> dict:
     scenes = []
     for i, (narr, act) in enumerate(raw_scenes):
         clean_act = clean_prompt_text(act)
-        # 將「該幕具體動作 (clean_act)」放在最前面第一順位，再附上三個角色的明確物種定義，
-        # 徹底避免 AI 把「小橘貓 (orange tabby cat)」誤畫成「紅髮人類嬰兒」！
-        full_prompt = (
-            f"{art_dna}. {clean_act}. "
-            f"Characters in scene: (1) {char1_dna}, (2) {char2_dna} (feline cat with fur and whiskers, NOT a human baby), "
-            f"(3) {char3_dna}. "
-            "Masterpiece 3D cinema quality, sharp focus, expressive faces, vertical 9:16, no text, no watermark"
-        )
+        full_prompt = build_image_prompt(art_dna, characters, clean_act)
         scenes.append({
             "narration": str(narr).strip(),
             "scene_action": str(act).strip(),
@@ -97,7 +194,9 @@ def parse_episode_from_row(row_dict: dict) -> dict:
     variant_title = f"{base_title}... {variant_suffix}"[:100]
 
     tags_raw = str(row_dict.get("tags", "cute cat, little girl and kitten, husky, wholesome pets, shorts"))
-    tags_list = [t.strip().lstrip("#") for t in tags_raw.split(",") if t.strip()]
+    # 舊回寫程式可能曾把影片網址追加到 Q 欄；網址不是 SEO 標籤。
+    tags_list = [t.strip().lstrip("#") for t in re.split(r"[,\r\n]+", tags_raw)
+                 if t.strip() and not re.search(r"https?://", t, re.IGNORECASE)]
 
     return {
         "id": ep_id,
@@ -105,7 +204,7 @@ def parse_episode_from_row(row_dict: dict) -> dict:
         "sent_count": sent_count,
         "target_sends": 6,
         "selected_visual_style": art_dna,
-        "character_dna": f"[1] {char1_dna} | [2] {char2_dna} | [3] {char3_dna}",
+        "character_dna": " | ".join(f"[{i}] {description}" for i, description in enumerate(characters, start=1)),
         "voice_name": VOICE_ROTATION[sent_count % len(VOICE_ROTATION)],
         "title": variant_title,
         "description": (
@@ -119,105 +218,47 @@ def parse_episode_from_row(row_dict: dict) -> dict:
 
 
 def fetch_next_episode_from_google_sheet() -> dict:
-    """
-    優先透過 CSV 直連讀取最新 18 欄試算表（免改 Apps Script 也能自動抓齊 3 個角色欄位！），
-    若失敗再走 Webhook 或內建保底。
-    """
+    """優先讀取有表頭的 CSV，備援 Webhook 也必須通過三角色資料驗證。"""
+    errors = []
     try:
         resp = requests.get(SHEET_CSV_URL, timeout=15)
-        if resp.status_code == 200 and "EP0" in resp.text:
-            reader = csv.reader(io.StringIO(resp.text))
-            for r_idx, row in enumerate(reader, start=1):
-                if not row:
-                    continue
-                first_col = str(row[0]).strip()
-                if first_col.startswith("EP") and len(row) >= 16:
-                    status_str = str(row[1]).strip()
-                    sent_str = str(row[2]).split("/")[0].strip()
-                    sent_cnt = int(sent_str) if sent_str.isdigit() else 0
-                    if "已完成" not in status_str and "Completed" not in status_str and sent_cnt < 6:
-                        # 自動相容 18 欄（含角色 3 設定）與 17 欄結構
-                        if len(row) >= 17:
-                            row_dict = {
-                                "row_index": r_idx,
-                                "id": first_col,
-                                "status": status_str,
-                                "sent_count": sent_cnt,
-                                "art_dna": row[3],
-                                "char1_dna": row[4],
-                                "char2_dna": row[5],
-                                "char3_dna": row[6],
-                                "s1_narration": row[7],
-                                "s1_action": row[8],
-                                "s2_narration": row[9],
-                                "s2_action": row[10],
-                                "s3_narration": row[11],
-                                "s3_action": row[12],
-                                "s4_narration": row[13],
-                                "s4_action": row[14],
-                                "title": row[15],
-                                "tags": row[16] if len(row) > 16 else "cute cat, kitten, shorts"
-                            }
-                        else:
-                            row_dict = {
-                                "row_index": r_idx,
-                                "id": first_col,
-                                "status": status_str,
-                                "sent_count": sent_cnt,
-                                "art_dna": row[3],
-                                "char1_dna": row[4],
-                                "char2_dna": row[5],
-                                "char3_dna": "",
-                                "s1_narration": row[6],
-                                "s1_action": row[7],
-                                "s2_narration": row[8],
-                                "s2_action": row[9],
-                                "s3_narration": row[10],
-                                "s3_action": row[11],
-                                "s4_narration": row[12],
-                                "s4_action": row[13],
-                                "title": row[14],
-                                "tags": row[15] if len(row) > 15 else "cute cat, kitten, shorts"
-                            }
-                        ep = parse_episode_from_row(row_dict)
-                        print(f"✅ [Google Sheet 18欄三角色讀取成功] 集數: {ep['id']} (第 {ep['sent_count'] + 1}/6 次發送)")
-                        return ep
-    except Exception as e:
-        print(f"  [Sheet CSV 讀取提示] ({e})")
+        resp.raise_for_status()
+        ep = episode_from_sheet_csv(resp.text)
+        print(f"✅ [Google Sheet 欄名對應讀取成功] 集數: {ep['id']} (第 {ep['sent_count'] + 1}/6 次發送)")
+        return ep
+    except (requests.RequestException, ValueError) as exc:
+        # 不列印請求網址，避免將 Webhook 部署資訊帶入日誌。
+        errors.append(f"CSV: {type(exc).__name__}")
+        if isinstance(exc, ValueError):
+            print(f"⚠️ [Sheet 欄位檢查] {exc}")
 
     webhook_url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
     if webhook_url:
         try:
-            resp = requests.get(f"{webhook_url}?action=get_next", timeout=20)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("status") == "ok" and data.get("episode"):
-                    ep = parse_episode_from_row(data["episode"])
-                    print(f"✅ [Google Sheet Webhook 讀取成功] 集數: {ep['id']}")
-                    return ep
-        except Exception:
-            pass
+            resp = requests.get(webhook_url, params={"action": "get_next"}, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict) or data.get("status") != "ok" or not data.get("episode"):
+                raise ValueError("Webhook 沒有回傳有效集數")
+            row_dict = data["episode"]
+            ep = parse_episode_from_row(row_dict)
+            status = str(row_dict.get("status", ""))
+            if ep["sent_count"] >= 6 or "已完成" in status or "completed" in status.casefold():
+                raise NoPendingEpisodes("Webhook 回傳的集數已完成，停止產片。")
+            if not str(ep["row_index"]).isdigit() or int(ep["row_index"]) < 1 or "row_index" not in row_dict:
+                raise ValueError("Webhook 缺少正確的 Sheet row_index，無法安全回寫")
+            print(f"✅ [Google Sheet Webhook 三角色檢查成功] 集數: {ep['id']}")
+            return ep
+        except (requests.RequestException, ValueError) as exc:
+            errors.append(f"Webhook: {type(exc).__name__}")
+            if isinstance(exc, ValueError):
+                print(f"⚠️ [Webhook 欄位檢查] {exc}")
 
-    default_row = {
-        "row_index": 8,
-        "id": "EP01",
-        "sent_count": 0,
-        "art_dna": "3D Pixar animation style, warm cinematic lighting, ultra-detailed",
-        "char1_dna": "Mia, a cute 6-year-old girl with brown pigtails wearing a yellow raincoat",
-        "char2_dna": "Mochi, a tiny fluffy orange tabby kitten with big green eyes",
-        "char3_dna": "Titan, a giant friendly silver-and-white Siberian Husky dog",
-        "s1_narration": "Six-year-old Mia found a tiny shivering ginger kitten in the rain and brought him home to meet her giant Husky, Titan.",
-        "s1_action": "Cute 6-year-old girl Mia in a yellow raincoat holding a tiny orange tabby kitten in a hallway, introducing the kitten to a giant silver-and-white Siberian Husky dog",
-        "s2_narration": "Everyone worried the ninety-pound dog would scare the kitten, but Titan gently laid down and offered his warm furry paw.",
-        "s2_action": "The giant silver-and-white Siberian Husky dog lying flat on the floor offering his big white front paw to the tiny orange tabby kitten, while the 6-year-old girl watches happily",
-        "s3_narration": "Within minutes, little Mochi was fast asleep on Titan's chest while Mia covered them both with her favorite soft blanket.",
-        "s3_action": "The tiny orange tabby kitten sleeping peacefully on top of the giant Siberian Husky dog's chest by a fireplace, while the 6-year-old girl places a soft blanket over the dog and cat",
-        "s4_narration": "Now the three best friends wear matching blue scarves everywhere they go! Subscribe if Mia and Mochi made you smile!",
-        "s4_action": "The 6-year-old girl, the giant Siberian Husky dog, and the tiny orange tabby kitten sitting side by side on green grass wearing matching blue scarves, smiling at camera",
-        "title": "Little Girl Brings Stray Kitten Home to Her 90-Pound Husky",
-        "tags": "cute cat, little girl and kitten, husky, wholesome story, 3d animation, cute animals, shorts"
-    }
-    return parse_episode_from_row(default_row)
+    raise RuntimeError(
+        "無法取得欄位正確的 Google Sheet 劇本，已停止產片，避免誤用內建 EP01 或錯位資料。"
+        "請確認 Sheet CSV 存取權及 Apps Script 的三角色欄位對應。"
+        + " / ".join(errors)
+    )
 
 
 async def generate_speech_audio(text: str, audio_path: str, voice_name: str):
@@ -261,12 +302,7 @@ def crop_bottom_watermark_and_save(img_path: str):
 
 
 def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx: int):
-    """
-    【三引擎高畫質算圖系統 — 解決 Pollinations 免費版畫質崩壞與第 2、4 幕被限流問題】
-    1. 引擎 A (最高畫質)：若 GitHub Secrets 設有 `HF_TOKEN` (HuggingFace 免費 Token)，直接呼叫官方原版 `black-forest-labs/FLUX.1-schnell` 高清模型，3 秒出頂級電影圖、零限流、不崩壞！
-    2. 引擎 B (Google 官方高畫質)：若設有 `GEMINI_API_KEY`，自動呼叫 Google Imagen 3 / Gemini Image 模型生成電影級分鏡！
-    3. 引擎 C (免金鑰 Pollinations Flux)：強制拉開 12 秒冷卻間隔避開 429 限流（確保第 1、2、3、4 幕全部獨立算出不同圖片，絕不重複用第 1、3 幕！），並明確標註 `feline cat with fur, NOT a human baby` 防止角色混淆！
-    """
+    """依序嘗試已設定的 HF、Google 與 Pollinations，傳送同一份完整提示詞。"""
     if os.path.exists(img_path) and is_valid_colorful_image(img_path):
         return
 
@@ -316,8 +352,8 @@ def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx
         except Exception as e:
             print(f"    [Google Imagen 提示] {e}")
 
-    # 引擎 C：免金鑰 Pollinations Flux（加入 12 秒防限流冷卻，確保 4 幕全部獨立算出，絕不重複畫面！）
-    encoded = urllib.parse.quote(prompt[:280])
+    # 引擎 C：完整編碼提示詞，包含描述中的斜線、問號等 URL 保留字。
+    encoded = urllib.parse.quote(prompt, safe="")
     for attempt in range(6):
         seed = master_seed + (scene_idx * 1009) + (attempt * 313)
         url = (
@@ -328,12 +364,17 @@ def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx
             "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/{17 + attempt}.0 Safari/605.1.15"
         }
         try:
-            # 關鍵：Pollinations 免費版對同一 IP 有嚴格的連續請求冷卻限制，間隔 10~12 秒可保證第 2、3、4 幕不被 429 拒絕！
+            # 拉開重試間隔以降低連續請求觸發限流的機會。
             wait_sec = 10.0 if (scene_idx > 1 and attempt == 0) else (6.0 * (attempt + 1))
             if scene_idx > 1 or attempt > 0:
                 print(f"    ⏳ 等待 {wait_sec:.0f} 秒防限流冷卻，準備算第 {scene_idx} 幕 (嘗試 {attempt+1}/6)...")
                 time.sleep(wait_sec)
             resp = requests.get(url, headers=headers, timeout=65)
+            if resp.status_code == 414:
+                raise ImagePromptTooLongError(
+                    f"第 {scene_idx} 幕完整提示詞（{len(prompt)} 字元）的網址被產圖服務拒絕（HTTP 414）。"
+                    "請精簡 Sheet 的畫風、角色或動作描述；程式不會截斷提示詞或以空白圖替代。"
+                )
             if resp.status_code == 200 and len(resp.content) > 20000:
                 with open(img_path, "wb") as f:
                     f.write(resp.content)
@@ -343,6 +384,8 @@ def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx
                     return
             else:
                 print(f"    [狀態碼 {resp.status_code}] 重新請求第 {scene_idx} 幕...")
+        except ImagePromptTooLongError:
+            raise
         except Exception as e:
             print(f"    [Flux 算圖重試 {attempt+1}/6] {e}")
 
@@ -570,6 +613,10 @@ def main():
     for idx, sc in enumerate(scenes, start=1):
         r_img = os.path.join(SCENE_DIR, f"raw_{idx}.jpg")
         a_path = os.path.join(SCENE_DIR, f"audio_{idx}.mp3")
+
+        # 欄位或劇本修正後，不能沿用上次錯位資料產生的舊分鏡。
+        if os.path.exists(r_img):
+            os.remove(r_img)
 
         print(f"  [準備第 {idx}/{total_scenes} 幕] 產生語音與高畫質分鏡圖片...")
         asyncio.run(generate_speech_audio(sc["narration"], a_path, voice_name))
