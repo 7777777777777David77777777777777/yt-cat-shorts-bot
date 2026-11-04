@@ -1,0 +1,56 @@
+name: Hourly 6x Cute Cat YouTube Shorts Factory
+
+on:
+  schedule:
+    # 每天分 6 個小時（台灣時間 20:00, 21:00, 22:00, 23:00, 00:00, 01:00），每小時自動執行 1 次
+    - cron: '0 12,13,14,15,16,17 * * *'
+  workflow_dispatch: # 保留手動按鈕，隨時可按 Run workflow 立即測試
+
+jobs:
+  generate-and-upload-short:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Install FFmpeg and Fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-liberation fonts-noto-cjk
+
+      - name: 3. Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 4. Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 5. Fetch Episode from Google Sheet and Render Video
+        env:
+          SHEET_WEBHOOK_URL: ${{ secrets.SHEET_WEBHOOK_URL }}
+        run: |
+          python main.py
+
+      - name: 6. Upload to YouTube and Update Sheet (1/6 to 6/6)
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          SHEET_WEBHOOK_URL: ${{ secrets.SHEET_WEBHOOK_URL }}
+        run: |
+          python upload_youtube.py
+
+      - name: 7. Backup Video Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cat-short-run-${{ github.run_number }}
+          path: |
+            output/final_short.mp4
+            output/metadata.json
+          retention-days: 7
