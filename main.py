@@ -17,18 +17,17 @@ OUTPUT_DIR = "output"
 SCENE_DIR = os.path.join(OUTPUT_DIR, "scenes")
 os.makedirs(SCENE_DIR, exist_ok=True)
 
-# 你的專屬 Google Sheet ID (已直接綁定)
+# 你的專屬 Google Sheet ID
 SHEET_ID = "1M6jINNdKCgisMLTD3x2h3Cift65xFCDMv2SySl-3Ngo"
 SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=0"
 
-# 6 大微軟高擬真神經網路語音（同一集在一天內每小時連發 6 次時，每次自動切換不同說書人聲線與微調標題鉤子，避開 YouTube 重複檔案降權！）
 VOICE_ROTATION = [
-    "en-GB-SoniaNeural",       # 第 1 發：英國溫暖繪本女聲
-    "en-US-AriaNeural",        # 第 2 發：美國自然故事女聲
-    "en-US-AnaNeural",         # 第 3 發：美國可愛童話女聲
-    "en-US-EmmaNeural",        # 第 4 發：美國溫柔療癒女聲
-    "en-US-BrianNeural",       # 第 5 發：美國磁性溫暖男聲
-    "en-AU-NatashaNeural"      # 第 6 發：澳洲清亮親切女聲
+    "en-GB-SoniaNeural",
+    "en-US-AriaNeural",
+    "en-US-AnaNeural",
+    "en-US-EmmaNeural",
+    "en-US-BrianNeural",
+    "en-AU-NatashaNeural"
 ]
 
 TITLE_HOOK_SUFFIXES = [
@@ -41,13 +40,19 @@ TITLE_HOOK_SUFFIXES = [
 ]
 
 
+def clean_prompt_text(text: str) -> str:
+    """移除括號與多餘符號，避免算圖 API 網址過長或解析失敗"""
+    text = re.sub(r"\([^)]*\)", "", str(text))
+    text = re.sub(r"[^a-zA-Z0-9, -]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def parse_episode_from_row(row_dict: dict) -> dict:
-    """將 Google Sheet 裡的一列轉換為標準 4 幕分鏡與雙角色設定結構"""
     ep_id = str(row_dict.get("id", "EP01")).strip()
     sent_count = int(str(row_dict.get("sent_count", "0")).split("/")[0].strip() or 0)
-    art_dna = str(row_dict.get("art_dna", "3D feature film animation style, warm golden sunlight, expressive eyes")).strip()
-    char1_dna = str(row_dict.get("char1_dna", "a tiny fluffy ginger kitten with big green eyes")).strip()
-    char2_dna = str(row_dict.get("char2_dna", "a gentle giant Siberian Husky")).strip()
+    art_dna = clean_prompt_text(row_dict.get("art_dna", "3D Pixar animation style, warm golden sunlight"))
+    char1_dna = clean_prompt_text(row_dict.get("char1_dna", "tiny fluffy ginger kitten with green eyes"))
+    char2_dna = clean_prompt_text(row_dict.get("char2_dna", "gentle giant Siberian Husky"))
 
     raw_scenes = [
         (row_dict.get("s1_narration", ""), row_dict.get("s1_action", "")),
@@ -59,15 +64,14 @@ def parse_episode_from_row(row_dict: dict) -> dict:
 
     scenes = []
     for i, (narr, act) in enumerate(raw_scenes):
+        clean_act = clean_prompt_text(act)
+        # 精簡算圖指令至 150 字元內，大幅提升 Pollinations 出圖成功率與速度
+        concise_prompt = f"{art_dna[:55]}, {clean_act[:75]}, {char1_dna[:40]}, vertical 9:16, no text"
         scenes.append({
             "narration": str(narr).strip(),
             "scene_action": str(act).strip(),
             "camera_style": cam_styles[i % 4],
-            "full_image_prompt": (
-                f"{art_dna}, Main character: {char1_dna}, Companion character: {char2_dna}, "
-                f"Scene action: {act}, subject centered in upper two-thirds of vertical 9:16 frame, "
-                "clean composition, no text, no watermark"
-            )
+            "full_image_prompt": concise_prompt
         })
 
     base_title = str(row_dict.get("title", "Tiny Stray Kitten Walks Up to a 90-Pound Husky!")).split("#")[0].strip()
@@ -79,7 +83,7 @@ def parse_episode_from_row(row_dict: dict) -> dict:
 
     return {
         "id": ep_id,
-        "row_index": row_dict.get("row_index", 0),
+        "row_index": row_dict.get("row_index", 8),
         "sent_count": sent_count,
         "target_sends": 6,
         "selected_visual_style": art_dna,
@@ -97,14 +101,8 @@ def parse_episode_from_row(row_dict: dict) -> dict:
 
 
 def fetch_next_episode_from_google_sheet() -> dict:
-    """
-    【方案 B 雙向同步讀取 + 公開 CSV 自動備援】
-    優先呼叫 Google Apps Script Webhook (`SHEET_WEBHOOK_URL`) 取得第一筆 `已發送次數 < 6` 的劇本；
-    若尚未設定 Webhook，亦可直接透過 `SHEET_CSV_URL` 讀取試算表內容！
-    """
     webhook_url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
 
-    # 1. 優先透過方案 B 的 Google Apps Script Webhook 讀取
     if webhook_url:
         try:
             resp = requests.get(f"{webhook_url}?action=get_next", timeout=20)
@@ -115,9 +113,8 @@ def fetch_next_episode_from_google_sheet() -> dict:
                     print(f"✅ [Google Sheet 方案B 連線成功] 讀取集數: {ep['id']} (今日第 {ep['sent_count'] + 1}/6 次發送)")
                     return ep
         except Exception as e:
-            print(f"  [Webhook 讀取提示] {e}，嘗試使用 CSV 直連讀取 Sheet...")
+            print(f"  [Webhook 讀取提示] {e}，切換為 CSV 直連讀取...")
 
-    # 2. 透過 Google Sheet CSV 匯出連結直接讀取
     try:
         resp = requests.get(SHEET_CSV_URL, timeout=15)
         if resp.status_code == 200 and "EP0" in resp.text:
@@ -156,14 +153,13 @@ def fetch_next_episode_from_google_sheet() -> dict:
     except Exception as e:
         print(f"  [Sheet CSV 讀取提示] ({e})")
 
-    # 3. 預設保底第 1 集
     default_row = {
         "row_index": 8,
         "id": "EP01",
         "sent_count": 0,
-        "art_dna": "3D Pixar DreamWorks feature animation style, warm golden sunlight, expressive eyes, ultra-detailed soft fur",
-        "char1_dna": "a tiny fluffy ginger tabby kitten with big emerald green eyes and white paws (Mochi)",
-        "char2_dna": "a giant gentle silver-and-white Siberian Husky with warm brown eyes (Titan)",
+        "art_dna": "3D Pixar DreamWorks feature animation style, warm golden sunlight",
+        "char1_dna": "tiny fluffy ginger tabby kitten with emerald green eyes",
+        "char2_dna": "giant gentle silver-and-white Siberian Husky",
         "s1_narration": "Nobody expected what happened early this morning.",
         "s1_action": "tiny ginger kitten reaching out one pink paw to touch the giant Husky black nose in a sunlit living room",
         "s2_narration": "At first, everyone watched quietly from a distance, amazed by every tiny gentle movement.",
@@ -179,16 +175,25 @@ def fetch_next_episode_from_google_sheet() -> dict:
 
 
 async def generate_speech_audio(text: str, audio_path: str, voice_name: str):
+    if os.path.exists(audio_path):
+        os.remove(audio_path)
     try:
         import edge_tts
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
         communicate = edge_tts.Communicate(text, voice_name, rate="+0%", pitch="+0Hz")
         await communicate.save(audio_path)
-    except Exception as e:
         if os.path.exists(audio_path) and os.path.getsize(audio_path) > 1000:
             return
-        raise RuntimeError(f"Edge-TTS 語音生成失敗: {e}")
+    except Exception as e:
+        print(f"  [切換至備援語音引擎] ({e})")
+
+    clean_txt = re.sub(r"[^a-zA-Z0-9,.?! ]", " ", text)
+    subprocess.run([
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", f"flite=text='{clean_txt}':voice=slt",
+        "-af", "acompressor,volume=1.6",
+        "-c:a", "libmp3lame", "-q:a", "2",
+        audio_path
+    ], check=True, stderr=subprocess.DEVNULL)
 
 
 def is_valid_colorful_image(img_path: str) -> bool:
@@ -200,32 +205,79 @@ def is_valid_colorful_image(img_path: str) -> bool:
         return False
 
 
-def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx: int):
+def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx: int, prev_imgs: list):
+    """
+    【四重防崩潰出圖引擎 — 100% 根除 FileNotFoundError】
+    1. 第一層：Pollinations 官方最快雙模型 (flux / turbo) + enhance=false 免排隊直出
+    2. 第二層：高品質真實可愛貓咪寫真圖庫 (Unsplash / Cataas)
+    3. 第三層：若前幾幕已有成功生成的 AI 圖，自動取前一張高畫質 AI 圖進行差異化景別重構圖
+    4. 第四層：溫暖童話漸層保底，確保 img_path 100% 寫入硬碟！
+    """
     if os.path.exists(img_path) and is_valid_colorful_image(img_path):
         return
 
-    clean_p = re.sub(r"[^a-zA-Z0-9, -]", " ", prompt)[:220]
-    encoded = urllib.parse.quote(clean_p)
-    models = ["flux", "flux-3d", "flux-realism", "turbo"]
+    encoded = urllib.parse.quote(prompt[:160])
+    models = ["flux", "turbo", "flux", "turbo"]
 
-    for attempt in range(6):
-        model_name = models[attempt % len(models)]
-        seed = master_seed + scene_idx + (attempt * 101)
-        url = f"https://image.pollinations.ai/prompt/{encoded}?width=768&height=1344&seed={seed}&nologo=true&model={model_name}"
-        headers = {"User-Agent": f"Mozilla/5.0 (X11; Linux x86_64; rv:{110+attempt}.0) Gecko/20100101 Firefox/{120+attempt}.0"}
+    for attempt in range(4):
+        model_name = models[attempt]
+        seed = master_seed + (scene_idx * 37) + (attempt * 101)
+        url = (
+            f"https://image.pollinations.ai/prompt/{encoded}"
+            f"?width=768&height=1344&seed={seed}&nologo=true&enhance=false&model={model_name}"
+        )
+        headers = {"User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/{121 + attempt}.0"}
         try:
             if attempt > 0 or scene_idx > 1:
-                time.sleep(2.5)
-            resp = requests.get(url, headers=headers, timeout=35)
-            if resp.status_code == 200 and len(resp.content) > 18000:
+                time.sleep(3.0)
+            resp = requests.get(url, headers=headers, timeout=28)
+            if resp.status_code == 200 and len(resp.content) > 15000:
                 with open(img_path, "wb") as f:
                     f.write(resp.content)
                 if is_valid_colorful_image(img_path):
                     with Image.open(img_path) as im:
                         im.convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS).save(img_path, quality=95)
+                    print(f"    ✅ 第 {scene_idx} 幕 AI 分鏡圖產出成功 (模型: {model_name})")
+                    return
+        except Exception as e:
+            print(f"    [算圖重試 {attempt+1}/4 | 模型 {model_name}] {e}")
+
+    # 第二層備援：高畫質可愛貓咪圖庫
+    fallback_urls = [
+        "https://images.unsplash.com/photo-1543852786-1cf6624b9987?w=1080&h=1920&fit=crop",
+        "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=1080&h=1920&fit=crop",
+        "https://images.unsplash.com/photo-1573865526739-10659fec78a5?w=1080&h=1920&fit=crop",
+        "https://images.unsplash.com/photo-1495360010541-f48722b34f7d?w=1080&h=1920&fit=crop",
+        "https://cataas.com/cat?width=1080&height=1920"
+    ]
+    for fb_url in [fallback_urls[(scene_idx - 1) % 4], fallback_urls[4]]:
+        try:
+            r = requests.get(fb_url, timeout=15)
+            if r.status_code == 200 and len(r.content) > 12000:
+                with open(img_path, "wb") as f:
+                    f.write(r.content)
+                if is_valid_colorful_image(img_path):
+                    with Image.open(img_path) as im:
+                        im.convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS).save(img_path, quality=95)
+                    print(f"    ✅ 第 {scene_idx} 幕使用高清萌寵圖庫備援成功")
                     return
         except Exception:
             pass
+
+    # 第三層備援：若同集已有成功生成的 AI 圖 (如 raw_1.jpg)，自動取該圖進行特寫重構圖，維持同角色連貫畫風！
+    for p_img in prev_imgs:
+        if os.path.exists(p_img) and is_valid_colorful_image(p_img):
+            with Image.open(p_img) as im:
+                im_rgb = im.convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS)
+                crop_box = (70, 110, 1010, 1780) if scene_idx % 2 == 0 else (40, 60, 1040, 1840)
+                reframed = im_rgb.crop(crop_box).resize((1080, 1920), Image.Resampling.LANCZOS)
+                reframed.save(img_path, quality=95)
+            print(f"    ✅ 第 {scene_idx} 幕使用同集連貫角色特寫分鏡成功")
+            return
+
+    # 第四層終極保底：溫暖童話漸層圖
+    im = Image.new("RGB", (1080, 1920), (245, 215, 185))
+    im.save(img_path, quality=95)
 
 
 def get_audio_duration(audio_path: str) -> float:
@@ -258,7 +310,6 @@ def split_into_single_line_phrases(narration: str) -> list:
 
 
 def subpixel_camera_frame(im: Image.Image, prog: float, camera_style: str) -> Image.Image:
-    """次像素浮點平滑運鏡 (BICUBIC)，100% 消除整數裁切階梯抖動"""
     ease = 0.5 - 0.5 * math.cos(min(max(prog, 0.0), 1.0) * math.pi)
 
     if camera_style == "smooth_push_in":
@@ -299,7 +350,6 @@ def render_continuous_smooth_short(
     scenes: list,
     final_mp4: str
 ):
-    """單一連續時間軸渲染，零分段卡頓、純白穩定單行字幕 (y=1650)"""
     fps = 30
     total_scenes = len(scenes)
 
@@ -436,6 +486,7 @@ def main():
     story = fetch_next_episode_from_google_sheet()
     voice_name = story.get("voice_name", "en-US-AriaNeural")
     scenes = story["scenes"]
+    total_scenes = len(scenes)
     master_seed = random.randint(10000, 888888)
 
     print(f"🎬 啟動 Google Sheet 連動產線 | 集數: {story['id']} (第 {story['sent_count'] + 1}/6 次發送)")
@@ -450,13 +501,15 @@ def main():
         r_img = os.path.join(SCENE_DIR, f"raw_{idx}.jpg")
         a_path = os.path.join(SCENE_DIR, f"audio_{idx}.mp3")
 
+        print(f"  [準備第 {idx}/{total_scenes} 幕] 產生語音與分鏡圖片...")
         asyncio.run(generate_speech_audio(sc["narration"], a_path, voice_name))
-        download_ai_keyframe(sc["full_image_prompt"], r_img, master_seed=master_seed, scene_idx=idx)
+        download_ai_keyframe(sc["full_image_prompt"], r_img, master_seed=master_seed, scene_idx=idx, prev_imgs=raw_imgs)
 
         raw_imgs.append(r_img)
         audio_paths.append(a_path)
 
     final_mp4 = os.path.join(OUTPUT_DIR, "final_short.mp4")
+    print("  ✨ 正在進行單一時間軸次像素絲滑渲染 (純白穩定字幕，零跳格)...")
     render_continuous_smooth_short(
         raw_imgs=raw_imgs,
         audio_paths=audio_paths,
