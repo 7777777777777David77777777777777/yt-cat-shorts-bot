@@ -14,13 +14,32 @@ SCOPES = [
 TARGET_CHANNEL_ID = "UC5P8yj_8TUhOrFsdp0qn-IQ"
 
 
+def format_image_usage(meta: dict) -> str:
+    usage = meta.get("image_usage") or {}
+    total = usage.get("total_tokens")
+    reported = usage.get("reported_total_tokens")
+    if isinstance(total, int) and not isinstance(total, bool) and total >= 0 and usage.get("token_usage_complete") is True:
+        summary = f"產圖 token：{total:,}"
+    elif isinstance(reported, int) and not isinstance(reported, bool) and reported >= 0:
+        summary = f"已回報產圖 token：{reported:,}（另 {usage.get('requests_without_token_usage', '未知')} 次請求未提供）"
+    else:
+        summary = "產圖 token：未提供"
+    if "images_used" in usage:
+        summary += f"；成功圖片：{usage['images_used']} 張"
+    if "api_requests" in usage:
+        summary += f"；API 請求：{usage['api_requests']} 次"
+    if usage.get("models_used"):
+        summary += "；模型：" + ", ".join(usage["models_used"])
+    return summary
+
+
 def report_back_to_google_sheet(meta: dict, youtube_url: str):
     """
     【方案 B：自動回寫 Google Sheet】
     當影片成功發佈到 YouTube 後，自動呼叫 Google Apps Script Webhook (`SHEET_WEBHOOK_URL`)：
     1. 將該集的 `已發送次數` + 1 (例如 0 -> 1, ..., 5 -> 6)
     2. 若未滿 6 次，狀態更新為 `連發中 (k/6)`；一旦滿 6 次，狀態自動改為 `已完成 (Completed)`，下一輪就會自動換下一集！
-    3. 將本次新發佈的 YouTube Shorts 網址追加記錄到 Q 欄
+    3. 將影片網址與產圖用量追加到 R 欄（需部署 google_apps_script.gs）
     """
     webhook_url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
     if not webhook_url:
@@ -33,14 +52,20 @@ def report_back_to_google_sheet(meta: dict, youtube_url: str):
         "row_index": meta.get("row_index", 0),
         "new_sent_count": int(meta.get("sent_count", 0)) + 1,
         "target_sends": int(meta.get("target_sends", 6)),
-        "youtube_url": youtube_url
+        "youtube_url": youtube_url,
+        "usage_summary": format_image_usage(meta),
+        "image_usage": meta.get("image_usage") or {},
     }
     try:
         resp = requests.post(webhook_url, json=payload, timeout=20)
-        if resp.status_code == 200:
-            print(f"📊 已同步回寫 Google Sheet！集數 {payload['id']} 發送進度: {payload['new_sent_count']}/6")
-    except Exception as e:
-        print(f"⚠️ 回寫 Google Sheet 失敗 ({e})")
+        resp.raise_for_status()
+        result = resp.json()
+        if not isinstance(result, dict) or result.get("status") != "updated":
+            raise ValueError("Webhook 未確認回寫成功")
+        print(f"📊 已同步回寫 Google Sheet！集數 {payload['id']} 發送進度: {payload['new_sent_count']}/6")
+        print(f"📊 {payload['usage_summary']}")
+    except (requests.RequestException, ValueError) as exc:
+        print(f"⚠️ 回寫 Google Sheet 失敗（{type(exc).__name__}）")
 
 
 def upload_short():

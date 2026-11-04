@@ -346,7 +346,51 @@ def crop_bottom_watermark_and_save(img_path: str):
         cropped.resize((1080, 1920), Image.Resampling.LANCZOS).save(img_path, quality=95)
 
 
-def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx: int):
+def start_image_request(records, provider: str, model: str, scene_idx: int) -> dict:
+    record = {
+        "scene": scene_idx, "provider": provider, "model": model,
+        "image_used": False, "returned_images": None,
+        "input_tokens": None, "output_tokens": None, "total_tokens": None,
+    }
+    if records is not None:
+        records.append(record)
+    return record
+
+
+def capture_token_usage(record: dict, response):
+    """只接受 API 明確回傳的數字；未知用量保留 None，不能當作零。"""
+    usage = response.get("usage_metadata", response.get("usageMetadata")) if isinstance(response, dict) else getattr(response, "usage_metadata", None)
+    fields = {
+        "input_tokens": ("prompt_token_count", "promptTokenCount"),
+        "output_tokens": ("candidates_token_count", "candidatesTokenCount"),
+        "total_tokens": ("total_token_count", "totalTokenCount"),
+    }
+    for target, names in fields.items():
+        for name in names:
+            value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                record[target] = value
+                break
+
+
+def summarize_image_usage(records: list) -> dict:
+    reported = [record["total_tokens"] for record in records if record["total_tokens"] is not None]
+    complete = bool(records) and len(reported) == len(records)
+    return {
+        "scope": "image_generation",
+        "api_requests": len(records),
+        "images_used": sum(record["image_used"] for record in records),
+        "total_tokens": sum(reported) if complete else None,
+        "reported_total_tokens": sum(reported) if reported else None,
+        "requests_without_token_usage": len(records) - len(reported),
+        "token_usage_complete": complete,
+        "models_used": sorted({record.get("model_version") or record["model"]
+                               for record in records if record["image_used"]}),
+        "requests": records,
+    }
+
+
+def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx: int, usage_records=None):
     """依序嘗試已設定的 HF、Google 與 Pollinations，傳送同一份完整提示詞。"""
     if os.path.exists(img_path) and is_valid_colorful_image(img_path):
         return
@@ -355,6 +399,7 @@ def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx
     hf_token = os.environ.get("HF_TOKEN", "").strip()
     if hf_token:
         for hf_model in ["black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev"]:
+            usage = start_image_request(usage_records, "huggingface", hf_model, scene_idx)
             try:
                 hf_url = f"https://api-inference.huggingface.co/models/{hf_model}"
                 resp = requests.post(
@@ -369,33 +414,54 @@ def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx
                     if is_valid_colorful_image(img_path):
                         with Image.open(img_path) as im:
                             im.convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS).save(img_path, quality=95)
+                        usage["returned_images"] = 1
+                        usage["image_used"] = True
                         print(f"    🎉 第 {scene_idx} 幕由 HuggingFace 原版 {hf_model} 頂級算圖成功！")
                         return
             except Exception as e:
                 print(f"    [HF {hf_model} 提示] {e}")
 
-    # 引擎 B：Google Gemini / Imagen 官方繪圖模型 (若設有 GEMINI_API_KEY)
+    # 引擎 B：Gemini Developer API 原生產圖；generate_images 不適用於目前的金鑰模式。
     gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if gemini_key:
         try:
             from google import genai
             from google.genai import types
-            client = genai.Client(api_key=gemini_key)
-            result = client.models.generate_images(
-                model="imagen-3.0-generate-002",
-                prompt=prompt,
-                config=types.GenerateImagesConfig(number_of_images=1, aspect_ratio="9:16")
+            client = genai.Client(api_key=gemini_key, vertexai=False)
+            model = os.environ.get("GEMINI_IMAGE_MODEL", "").strip() or "gemini-2.5-flash-image"
+            usage = start_image_request(usage_records, "google", model, scene_idx)
+            result = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["IMAGE"],
+                    image_config=types.ImageConfig(aspect_ratio="9:16"),
+                ),
             )
-            for gen_img in result.generated_images:
+            capture_token_usage(usage, result)
+            if isinstance(result.model_version, str) and result.model_version:
+                usage["model_version"] = result.model_version
+            image_parts = []
+            for candidate in result.candidates or []:
+                if candidate.content is None:
+                    continue
+                for part in candidate.content.parts or []:
+                    blob = part.inline_data
+                    if not part.thought and blob is not None and blob.data and (blob.mime_type or "").startswith("image/"):
+                        image_parts.append(blob)
+            usage["returned_images"] = len(image_parts)
+            for image in image_parts:
                 with open(img_path, "wb") as f:
-                    f.write(gen_img.image.image_bytes)
+                    f.write(image.data)
                 if is_valid_colorful_image(img_path):
                     with Image.open(img_path) as im:
                         im.convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS).save(img_path, quality=95)
-                    print(f"    🎉 第 {scene_idx} 幕由 Google Imagen 3 頂級算圖成功！")
+                    usage["image_used"] = True
+                    print(f"    ✅ 第 {scene_idx} 幕由 Google {usage.get('model_version') or model} 產圖成功！")
                     return
+            raise ValueError("Gemini 回應沒有可採用的圖片；將嘗試備援服務")
         except Exception as e:
-            print(f"    [Google Imagen 提示] {e}")
+            print(f"    [Google Gemini 產圖失敗] {e}")
 
     # 引擎 C：完整編碼提示詞，包含描述中的斜線、問號等 URL 保留字。
     encoded = urllib.parse.quote(prompt, safe="")
@@ -414,6 +480,7 @@ def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx
             if scene_idx > 1 or attempt > 0:
                 print(f"    ⏳ 等待 {wait_sec:.0f} 秒防限流冷卻，準備算第 {scene_idx} 幕 (嘗試 {attempt+1}/6)...")
                 time.sleep(wait_sec)
+            usage = start_image_request(usage_records, "pollinations", "flux", scene_idx)
             resp = requests.get(url, headers=headers, timeout=65)
             if resp.status_code == 414:
                 raise ImagePromptTooLongError(
@@ -425,6 +492,8 @@ def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx
                     f.write(resp.content)
                 if is_valid_colorful_image(img_path):
                     crop_bottom_watermark_and_save(img_path)
+                    usage["returned_images"] = 1
+                    usage["image_used"] = True
                     print(f"    ✅ 第 {scene_idx} 幕獨立 Flux 分鏡產出成功！")
                     return
             else:
@@ -654,6 +723,7 @@ def main():
 
     raw_imgs = []
     audio_paths = []
+    usage_records = []
 
     for idx, sc in enumerate(scenes, start=1):
         r_img = os.path.join(SCENE_DIR, f"raw_{idx}.jpg")
@@ -665,7 +735,8 @@ def main():
 
         print(f"  [準備第 {idx}/{total_scenes} 幕] 產生語音與高畫質分鏡圖片...")
         asyncio.run(generate_speech_audio(sc["narration"], a_path, voice_name))
-        download_ai_keyframe(sc["full_image_prompt"], r_img, master_seed=master_seed, scene_idx=idx)
+        download_ai_keyframe(sc["full_image_prompt"], r_img, master_seed=master_seed, scene_idx=idx,
+                             usage_records=usage_records)
 
         raw_imgs.append(r_img)
         audio_paths.append(a_path)
@@ -679,6 +750,7 @@ def main():
         final_mp4=final_mp4
     )
 
+    story["image_usage"] = summarize_image_usage(usage_records)
     meta_path = os.path.join(OUTPUT_DIR, "metadata.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(story, f, ensure_ascii=False, indent=2)
