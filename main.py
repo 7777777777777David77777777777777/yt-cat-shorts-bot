@@ -92,6 +92,41 @@ def validate_episode_row(row_dict: dict):
     parse_sent_count(row_dict["sent_count"])
 
 
+def normalize_webhook_episode(row_dict: dict) -> dict:
+    """只修復可確認的舊版兩角色欄位位移，不補造缺失的角色或劇情。"""
+    if not isinstance(row_dict, dict) or str(row_dict.get("char3_dna") or "").strip():
+        return row_dict
+    # 舊版 Apps Script 沿用 G～P 的兩角色位置，但 Sheet 已插入 G 欄角色 3：
+    # G -> s1_narration，I/K/M -> s2/s3/s4_narration，O -> title，P -> tags。
+    # 必須同時確認角色 3 標籤及四個動作標籤，才可辨識並搬回原欄位。
+    if not re.match(r"^Character\s*3\s*[:：]", str(row_dict.get("s1_narration", "")).strip(), re.IGNORECASE):
+        return row_dict
+    action_fields = ["s2_narration", "s3_narration", "s4_narration", "title"]
+    for i, field in enumerate(action_fields, start=1):
+        if not re.match(rf"^Scene\s*{i}\s*[:：]", str(row_dict.get(field, "")).strip(), re.IGNORECASE):
+            return row_dict
+
+    # 舊格式的 tags 實際裝的是 P 欄標題。有些腳本會先依逗號分割成陣列。
+    title = row_dict.get("tags")
+    if isinstance(title, list) and all(isinstance(part, str) for part in title):
+        title = ", ".join(title)
+    if not isinstance(title, str) or not title.strip() or re.search(r"https?://", title, re.IGNORECASE):
+        raise ValueError("已辨識舊 Webhook 的欄位位移，但未收到 P 欄標題；請更新 Apps Script")
+
+    corrected = row_dict.copy()
+    corrected["char3_dna"] = row_dict["s1_narration"]
+    for i in range(1, 5):
+        corrected[f"s{i}_narration"] = row_dict.get(f"s{i}_action", "")
+        corrected[f"s{i}_action"] = row_dict[action_fields[i - 1]]
+    corrected["title"] = title.strip()
+    # Q 欄未包含在這種舊回應裡，不能拿 P 欄標題假裝 SEO 標籤。
+    corrected["tags"] = ""
+    validate_episode_row(corrected)
+    print("ℹ️ 已辨識舊 Webhook 的一欄位移，恢復角色 3、四幕台詞／動作及 P 欄標題。")
+    print("ℹ️ 舊回應未提供 Q 欄 SEO 標籤，本次略過；請更新 Apps Script 以取得完整欄位。")
+    return corrected
+
+
 def episode_from_sheet_csv(csv_text: str) -> dict:
     """略過中控台摘要列，以第 7 列的欄名定位資料，不以總欄數猜測格式。"""
     def normalize_header(value):
@@ -228,9 +263,14 @@ def fetch_next_episode_from_google_sheet() -> dict:
         return ep
     except (requests.RequestException, ValueError) as exc:
         # 不列印請求網址，避免將 Webhook 部署資訊帶入日誌。
-        errors.append(f"CSV: {type(exc).__name__}")
+        detail = type(exc).__name__
+        if isinstance(exc, requests.HTTPError) and exc.response is not None:
+            detail += f" (HTTP {exc.response.status_code})"
+        errors.append(f"CSV: {detail}")
         if isinstance(exc, ValueError):
             print(f"⚠️ [Sheet 欄位檢查] {exc}")
+        else:
+            print(f"⚠️ [Sheet CSV 讀取] {detail}；嘗試備援 Webhook。")
 
     webhook_url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
     if webhook_url:
@@ -240,7 +280,7 @@ def fetch_next_episode_from_google_sheet() -> dict:
             data = resp.json()
             if not isinstance(data, dict) or data.get("status") != "ok" or not data.get("episode"):
                 raise ValueError("Webhook 沒有回傳有效集數")
-            row_dict = data["episode"]
+            row_dict = normalize_webhook_episode(data["episode"])
             ep = parse_episode_from_row(row_dict)
             status = str(row_dict.get("status", ""))
             if ep["sent_count"] >= 6 or "已完成" in status or "completed" in status.casefold():
@@ -250,9 +290,14 @@ def fetch_next_episode_from_google_sheet() -> dict:
             print(f"✅ [Google Sheet Webhook 三角色檢查成功] 集數: {ep['id']}")
             return ep
         except (requests.RequestException, ValueError) as exc:
-            errors.append(f"Webhook: {type(exc).__name__}")
+            detail = type(exc).__name__
+            if isinstance(exc, requests.HTTPError) and exc.response is not None:
+                detail += f" (HTTP {exc.response.status_code})"
+            errors.append(f"Webhook: {detail}")
             if isinstance(exc, ValueError):
                 print(f"⚠️ [Webhook 欄位檢查] {exc}")
+            else:
+                print(f"⚠️ [Webhook 讀取] {detail}")
 
     raise RuntimeError(
         "無法取得欄位正確的 Google Sheet 劇本，已停止產片，避免誤用內建 EP01 或錯位資料。"
