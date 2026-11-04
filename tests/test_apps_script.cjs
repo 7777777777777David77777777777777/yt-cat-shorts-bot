@@ -15,6 +15,7 @@ function fixture() {
   rows[8] = [...rows[7]];
   rows[8][0] = 'EP02';
   const sheet = {
+    getSheetId: () => 0,
     getDataRange: () => ({getValues: () => rows.map(row => [...row])}),
     getLastRow: () => rows.length,
     getRange(row, column) {
@@ -25,8 +26,14 @@ function fixture() {
       };
     },
   };
+  let locked = false;
   const context = {
-    SpreadsheetApp: {getActiveSpreadsheet: () => ({getSheets: () => [sheet]})},
+    SpreadsheetApp: {getActiveSpreadsheet: () => ({getSheets: () => [sheet], getId: () => 'test-spreadsheet'})},
+    LockService: {getScriptLock: () => ({
+      waitLock() { assert.equal(locked, false); locked = true; },
+      releaseLock() { assert.equal(locked, true); locked = false; },
+    })},
+    console: {log() {}},
     ContentService: {
       MimeType: {JSON: 'application/json'},
       createTextOutput: text => ({text, setMimeType() { return this; }}),
@@ -39,7 +46,7 @@ function fixture() {
     youtube_url: 'https://youtube.com/shorts/testVideo01',
     usage_summary: '產圖 token：4,000；成功圖片：4 張；API 請求：4 次；模型：gemini-2.5-flash-image',
   };
-  return {rows, context, payload, post(body = payload) {
+  return {rows, context, payload, sheet, post(body = payload) {
     return JSON.parse(context.doPost({postData: {contents: JSON.stringify(body)}}).text);
   }};
 }
@@ -115,4 +122,78 @@ test('completed episodes are skipped and exhausted queues return empty', () => {
   assert.equal(JSON.parse(context.doGet({}).text).episode.id, 'EP02');
   rows[8][2] = 6;
   assert.equal(JSON.parse(context.doGet({}).text).status, 'empty');
+});
+
+test('status endpoint identifies deployed script and destination without touching cells', () => {
+  const {rows, context} = fixture();
+  const original = JSON.stringify(rows);
+  const result = JSON.parse(context.doGet({parameter: {action: 'status'}}).text);
+  assert.equal(result.script_version, 'r18-usage-v2');
+  assert.equal(result.url_column, 18);
+  assert.equal(result.spreadsheet_id, 'test-spreadsheet');
+  assert.equal(result.sheet_id, 0);
+  assert.equal(JSON.stringify(rows), original);
+});
+
+test('POST acknowledgement includes deployment version and R column', () => {
+  const {post} = fixture();
+  const result = post();
+  assert.equal(result.script_version, 'r18-usage-v2');
+  assert.equal(result.url_column, 18);
+});
+
+test('repair moves historical Q links to R and preserves SEO tags and progress', () => {
+  const {rows, context} = fixture();
+  const links = Array.from({length: 4}, (_, i) => `[${i + 1}/6] https://youtube.com/shorts/oldVideo00${i}`);
+  rows[7][16] += '\n\n' + links.join('\n');
+  const count = rows[7][2];
+  const status = rows[7][1];
+  const report = context.repairLegacyUrlRecords();
+  assert.equal(report.rows_updated, 1);
+  assert.equal(report.records_moved, 4);
+  assert.equal(rows[7][16], 'kitten, husky');
+  assert.equal(rows[7][17], links.join('\n'));
+  assert.equal(rows[7][2], count);
+  assert.equal(rows[7][1], status);
+  const repaired = JSON.stringify(rows);
+  assert.equal(context.repairLegacyUrlRecords().rows_updated, 0);
+  assert.equal(JSON.stringify(rows), repaired);
+});
+
+test('repair deduplicates an existing R link and keeps its token details', () => {
+  const {rows, context} = fixture();
+  const url = 'https://youtube.com/shorts/oldVideo001';
+  rows[7][16] += `\n[1/6] ${url}`;
+  rows[7][17] = `[1/6] ${url} | 產圖 token：1,200`;
+  const previous = rows[7][17];
+  const report = context.repairLegacyUrlRecords();
+  assert.equal(report.records_moved, 0);
+  assert.equal(report.records_removed_from_q, 1);
+  assert.equal(rows[7][16], 'kitten, husky');
+  assert.equal(rows[7][17], previous);
+});
+
+test('repair preserves unrelated text and ignores non-episode rows', () => {
+  const {rows, context} = fixture();
+  rows[7][16] += '\nNotes with https://youtube.com/shorts/reference01 in a sentence';
+  rows[6][16] = '[1/6] https://youtube.com/shorts/headerVideo';
+  const original = JSON.stringify(rows);
+  assert.equal(context.repairLegacyUrlRecords().rows_updated, 0);
+  assert.equal(JSON.stringify(rows), original);
+});
+
+test('if saving R fails, repair leaves original Q links intact and releases the lock', () => {
+  const {rows, context, sheet, post} = fixture();
+  rows[7][16] += '\n[1/6] https://youtube.com/shorts/oldVideo001';
+  const original = rows[7][16];
+  const getRange = sheet.getRange;
+  sheet.getRange = (row, column) => {
+    const range = getRange(row, column);
+    if (column === 18) range.setValue = () => { throw new Error('simulated Sheet write failure'); };
+    return range;
+  };
+  assert.throws(() => context.repairLegacyUrlRecords(), /simulated Sheet write failure/);
+  assert.equal(rows[7][16], original);
+  sheet.getRange = getRange;
+  assert.equal(post().status, 'updated');
 });

@@ -62,6 +62,11 @@ def report_back_to_google_sheet(meta: dict, youtube_url: str):
         result = resp.json()
         if not isinstance(result, dict) or result.get("status") != "updated":
             raise ValueError("Webhook 未確認回寫成功")
+        version = result.get("script_version")
+        if isinstance(version, str) and result.get("url_column") == 18:
+            print(f"📊 Webhook 部署版本：{version}；網址回填 R 欄（18）。")
+        else:
+            print("⚠️ Webhook 已接受回寫，但未確認 R 欄版本；請更新原部署或檢查 SHEET_WEBHOOK_URL。")
         print(f"📊 已同步回寫 Google Sheet！集數 {payload['id']} 發送進度: {payload['new_sent_count']}/6")
         print(f"📊 {payload['usage_summary']}")
     except (requests.RequestException, ValueError) as exc:

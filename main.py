@@ -280,6 +280,11 @@ def fetch_next_episode_from_google_sheet() -> dict:
             data = resp.json()
             if not isinstance(data, dict) or data.get("status") != "ok" or not data.get("episode"):
                 raise ValueError("Webhook 沒有回傳有效集數")
+            version = data.get("script_version")
+            if isinstance(version, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,80}", version):
+                print(f"ℹ️ [Webhook 版本] {version}；網址欄位：{data.get('url_column', '未回報')}")
+            else:
+                print("⚠️ Webhook 未回報部署版本；請確認已部署新版，且 SHEET_WEBHOOK_URL 指向正確的 /exec 網址。")
             row_dict = normalize_webhook_episode(data["episode"])
             ep = parse_episode_from_row(row_dict)
             status = str(row_dict.get("status", ""))
