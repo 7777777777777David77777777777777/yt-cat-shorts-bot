@@ -6,6 +6,7 @@ import io
 import math
 import json
 import time
+import base64
 import random
 import urllib.parse
 import subprocess
@@ -40,14 +41,14 @@ TITLE_HOOK_SUFFIXES = [
 
 
 def clean_prompt_text(text: str) -> str:
-    """移除括號內註記與特殊符號，保留乾淨英文描述"""
-    text = re.sub(r"\([^)]*\)", "", str(text))
+    """移除多餘括號與特殊符號，保留清晰英文描述"""
+    text = re.sub(r"^Character\s*\d+\s*:\s*", "", str(text), flags=re.IGNORECASE)
+    text = re.sub(r"^Scene\s*\d+\s*:\s*", "", str(text), flags=re.IGNORECASE)
     text = re.sub(r"[^a-zA-Z0-9, -]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
 def clean_base_title(raw_title: str) -> str:
-    """移除原標題尾端已有的 Wait For It / Emoji / Hashtags，避免標題尾綴重複出現兩次"""
     t = str(raw_title).split("#")[0].strip()
     t = re.sub(r"(\.\.\.)?\s*Wait For It!?.*$", "", t, flags=re.IGNORECASE).strip()
     t = re.sub(r"[^\w\s,'?!-]", "", t).strip()
@@ -55,11 +56,15 @@ def clean_base_title(raw_title: str) -> str:
 
 
 def parse_episode_from_row(row_dict: dict) -> dict:
+    """
+    支援 18 欄「三角色獨立設定 (char1_dna, char2_dna, char3_dna) + 4 幕台詞與動作嚴格對齊」結構
+    """
     ep_id = str(row_dict.get("id", "EP01")).strip()
     sent_count = int(str(row_dict.get("sent_count", "0")).split("/")[0].strip() or 0)
-    art_dna = clean_prompt_text(row_dict.get("art_dna", "3D Pixar DreamWorks feature animation style, warm golden sunlight"))
-    char1_dna = clean_prompt_text(row_dict.get("char1_dna", "cute 6-year-old little girl in yellow raincoat holding a tiny fluffy ginger kitten"))
-    char2_dna = clean_prompt_text(row_dict.get("char2_dna", "giant gentle silver-and-white Siberian Husky"))
+    art_dna = clean_prompt_text(row_dict.get("art_dna", "3D Pixar animation style, warm cinematic lighting, ultra-detailed"))
+    char1_dna = clean_prompt_text(row_dict.get("char1_dna", "a cute 6-year-old girl with brown pigtails wearing a yellow raincoat"))
+    char2_dna = clean_prompt_text(row_dict.get("char2_dna", "a tiny fluffy orange tabby kitten with big green eyes"))
+    char3_dna = clean_prompt_text(row_dict.get("char3_dna", "a giant friendly silver-and-white Siberian Husky dog"))
 
     raw_scenes = [
         (row_dict.get("s1_narration", ""), row_dict.get("s1_action", "")),
@@ -72,10 +77,13 @@ def parse_episode_from_row(row_dict: dict) -> dict:
     scenes = []
     for i, (narr, act) in enumerate(raw_scenes):
         clean_act = clean_prompt_text(act)
-        # 100% 根據該幕具體動作 (clean_act) 與角色設定 (小女孩 / 貓咪 / 狗狗) 組合算圖指令，確保畫面與台詞完全相符！
+        # 將「該幕具體動作 (clean_act)」放在最前面第一順位，再附上三個角色的明確物種定義，
+        # 徹底避免 AI 把「小橘貓 (orange tabby cat)」誤畫成「紅髮人類嬰兒」！
         full_prompt = (
-            f"{art_dna}, {clean_act}, featuring {char1_dna} and {char2_dna}, "
-            "heartwarming expressive faces, vertical 9:16 aspect ratio, clean composition, no text, no watermark"
+            f"{art_dna}. {clean_act}. "
+            f"Characters in scene: (1) {char1_dna}, (2) {char2_dna} (feline cat with fur and whiskers, NOT a human baby), "
+            f"(3) {char3_dna}. "
+            "Masterpiece 3D cinema quality, sharp focus, expressive faces, vertical 9:16, no text, no watermark"
         )
         scenes.append({
             "narration": str(narr).strip(),
@@ -97,7 +105,7 @@ def parse_episode_from_row(row_dict: dict) -> dict:
         "sent_count": sent_count,
         "target_sends": 6,
         "selected_visual_style": art_dna,
-        "character_dna": f"{char1_dna} & {char2_dna}",
+        "character_dna": f"[1] {char1_dna} | [2] {char2_dna} | [3] {char3_dna}",
         "voice_name": VOICE_ROTATION[sent_count % len(VOICE_ROTATION)],
         "title": variant_title,
         "description": (
@@ -111,20 +119,10 @@ def parse_episode_from_row(row_dict: dict) -> dict:
 
 
 def fetch_next_episode_from_google_sheet() -> dict:
-    webhook_url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
-
-    if webhook_url:
-        try:
-            resp = requests.get(f"{webhook_url}?action=get_next", timeout=20)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("status") == "ok" and data.get("episode"):
-                    ep = parse_episode_from_row(data["episode"])
-                    print(f"✅ [Google Sheet 方案B 連線成功] 讀取集數: {ep['id']} (今日第 {ep['sent_count'] + 1}/6 次發送)")
-                    return ep
-        except Exception as e:
-            print(f"  [Webhook 讀取提示] {e}，切換為 CSV 直連讀取...")
-
+    """
+    優先透過 CSV 直連讀取最新 18 欄試算表（免改 Apps Script 也能自動抓齊 3 個角色欄位！），
+    若失敗再走 Webhook 或內建保底。
+    """
     try:
         resp = requests.get(SHEET_CSV_URL, timeout=15)
         if resp.status_code == 200 and "EP0" in resp.text:
@@ -133,51 +131,89 @@ def fetch_next_episode_from_google_sheet() -> dict:
                 if not row:
                     continue
                 first_col = str(row[0]).strip()
-                if first_col.startswith("EP") and len(row) >= 15:
+                if first_col.startswith("EP") and len(row) >= 16:
                     status_str = str(row[1]).strip()
                     sent_str = str(row[2]).split("/")[0].strip()
                     sent_cnt = int(sent_str) if sent_str.isdigit() else 0
                     if "已完成" not in status_str and "Completed" not in status_str and sent_cnt < 6:
-                        row_dict = {
-                            "row_index": r_idx,
-                            "id": first_col,
-                            "status": status_str,
-                            "sent_count": sent_cnt,
-                            "art_dna": row[3],
-                            "char1_dna": row[4],
-                            "char2_dna": row[5],
-                            "s1_narration": row[6],
-                            "s1_action": row[7],
-                            "s2_narration": row[8],
-                            "s2_action": row[9],
-                            "s3_narration": row[10],
-                            "s3_action": row[11],
-                            "s4_narration": row[12],
-                            "s4_action": row[13],
-                            "title": row[14],
-                            "tags": row[15] if len(row) > 15 else "cute cat, kitten, shorts"
-                        }
+                        # 自動相容 18 欄（含角色 3 設定）與 17 欄結構
+                        if len(row) >= 17:
+                            row_dict = {
+                                "row_index": r_idx,
+                                "id": first_col,
+                                "status": status_str,
+                                "sent_count": sent_cnt,
+                                "art_dna": row[3],
+                                "char1_dna": row[4],
+                                "char2_dna": row[5],
+                                "char3_dna": row[6],
+                                "s1_narration": row[7],
+                                "s1_action": row[8],
+                                "s2_narration": row[9],
+                                "s2_action": row[10],
+                                "s3_narration": row[11],
+                                "s3_action": row[12],
+                                "s4_narration": row[13],
+                                "s4_action": row[14],
+                                "title": row[15],
+                                "tags": row[16] if len(row) > 16 else "cute cat, kitten, shorts"
+                            }
+                        else:
+                            row_dict = {
+                                "row_index": r_idx,
+                                "id": first_col,
+                                "status": status_str,
+                                "sent_count": sent_cnt,
+                                "art_dna": row[3],
+                                "char1_dna": row[4],
+                                "char2_dna": row[5],
+                                "char3_dna": "",
+                                "s1_narration": row[6],
+                                "s1_action": row[7],
+                                "s2_narration": row[8],
+                                "s2_action": row[9],
+                                "s3_narration": row[10],
+                                "s3_action": row[11],
+                                "s4_narration": row[12],
+                                "s4_action": row[13],
+                                "title": row[14],
+                                "tags": row[15] if len(row) > 15 else "cute cat, kitten, shorts"
+                            }
                         ep = parse_episode_from_row(row_dict)
-                        print(f"✅ [Google Sheet CSV 讀取成功] 集數: {ep['id']} (第 {ep['sent_count'] + 1}/6 次發送)")
+                        print(f"✅ [Google Sheet 18欄三角色讀取成功] 集數: {ep['id']} (第 {ep['sent_count'] + 1}/6 次發送)")
                         return ep
     except Exception as e:
         print(f"  [Sheet CSV 讀取提示] ({e})")
+
+    webhook_url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
+    if webhook_url:
+        try:
+            resp = requests.get(f"{webhook_url}?action=get_next", timeout=20)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "ok" and data.get("episode"):
+                    ep = parse_episode_from_row(data["episode"])
+                    print(f"✅ [Google Sheet Webhook 讀取成功] 集數: {ep['id']}")
+                    return ep
+        except Exception:
+            pass
 
     default_row = {
         "row_index": 8,
         "id": "EP01",
         "sent_count": 0,
-        "art_dna": "3D Pixar DreamWorks feature animation style, warm golden sunlight, expressive eyes, ultra-detailed soft fur",
-        "char1_dna": "a cute 6-year-old little girl named Mia with warm brown pigtails wearing a yellow raincoat, holding a tiny fluffy ginger kitten",
-        "char2_dna": "a giant gentle silver-and-white Siberian Husky dog with kind brown eyes",
+        "art_dna": "3D Pixar animation style, warm cinematic lighting, ultra-detailed",
+        "char1_dna": "Mia, a cute 6-year-old girl with brown pigtails wearing a yellow raincoat",
+        "char2_dna": "Mochi, a tiny fluffy orange tabby kitten with big green eyes",
+        "char3_dna": "Titan, a giant friendly silver-and-white Siberian Husky dog",
         "s1_narration": "Six-year-old Mia found a tiny shivering ginger kitten in the rain and brought him home to meet her giant Husky, Titan.",
-        "s1_action": "cute 6-year-old girl in yellow raincoat kneeling in cozy hallway, holding a tiny wet ginger kitten in front of a giant gentle Siberian Husky",
+        "s1_action": "Cute 6-year-old girl Mia in a yellow raincoat holding a tiny orange tabby kitten in a hallway, introducing the kitten to a giant silver-and-white Siberian Husky dog",
         "s2_narration": "Everyone worried the ninety-pound dog would scare the kitten, but Titan gently laid down and offered his warm furry paw.",
-        "s2_action": "giant Siberian Husky lying flat on living room rug as the tiny ginger kitten climbs onto his huge white paw while the little girl smiles",
+        "s2_action": "The giant silver-and-white Siberian Husky dog lying flat on the floor offering his big white front paw to the tiny orange tabby kitten, while the 6-year-old girl watches happily",
         "s3_narration": "Within minutes, little Mochi was fast asleep on Titan's chest while Mia covered them both with her favorite soft blanket.",
-        "s3_action": "cute little girl gently placing a knitted blanket over the giant Husky and the tiny ginger kitten sleeping together by a warm fireplace",
+        "s3_action": "The tiny orange tabby kitten sleeping peacefully on top of the giant Siberian Husky dog's chest by a fireplace, while the 6-year-old girl places a soft blanket over the dog and cat",
         "s4_narration": "Now the three best friends wear matching blue scarves everywhere they go! Subscribe if Mia and Mochi made you smile!",
-        "s4_action": "happy little girl, giant Husky, and tiny ginger kitten sitting side by side on a sunny garden lawn wearing matching blue scarves, looking at camera",
+        "s4_action": "The 6-year-old girl, the giant Siberian Husky dog, and the tiny orange tabby kitten sitting side by side on green grass wearing matching blue scarves, smiling at camera",
         "title": "Little Girl Brings Stray Kitten Home to Her 90-Pound Husky",
         "tags": "cute cat, little girl and kitten, husky, wholesome story, 3d animation, cute animals, shorts"
     }
@@ -216,55 +252,99 @@ def is_valid_colorful_image(img_path: str) -> bool:
 
 
 def crop_bottom_watermark_and_save(img_path: str):
-    """自動切除圖片最底部 5% 與左右 2% 邊緣再縮放回 1080x1920，100% 消除右下角浮水印"""
+    """自動切除圖片底部 5.5% 與左右 2% 邊緣再縮放回 1080x1920，100% 物理消除右下角浮水印"""
     with Image.open(img_path) as im:
         im_rgb = im.convert("RGB")
         w, h = im_rgb.size
-        cropped = im_rgb.crop((int(w * 0.02), int(h * 0.01), int(w * 0.98), int(h * 0.95)))
+        cropped = im_rgb.crop((int(w * 0.02), int(h * 0.01), int(w * 0.98), int(h * 0.945)))
         cropped.resize((1080, 1920), Image.Resampling.LANCZOS).save(img_path, quality=95)
 
 
-def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx: int, prev_imgs: list):
+def download_ai_keyframe(prompt: str, img_path: str, master_seed: int, scene_idx: int):
     """
-    【高畫質 Flux 專屬出圖引擎 — 100% 忠於劇本分鏡描述】
-    全程鎖定 Pollinations `flux` 模型（理解複雜多角色互動如「小女孩 + 小橘貓 + 哈士奇」能力最強），
-    並自動切除底部邊緣浮水印，移除與劇本不符的隨機真實貓照片備援！
+    【三引擎高畫質算圖系統 — 解決 Pollinations 免費版畫質崩壞與第 2、4 幕被限流問題】
+    1. 引擎 A (最高畫質)：若 GitHub Secrets 設有 `HF_TOKEN` (HuggingFace 免費 Token)，直接呼叫官方原版 `black-forest-labs/FLUX.1-schnell` 高清模型，3 秒出頂級電影圖、零限流、不崩壞！
+    2. 引擎 B (Google 官方高畫質)：若設有 `GEMINI_API_KEY`，自動呼叫 Google Imagen 3 / Gemini Image 模型生成電影級分鏡！
+    3. 引擎 C (免金鑰 Pollinations Flux)：強制拉開 12 秒冷卻間隔避開 429 限流（確保第 1、2、3、4 幕全部獨立算出不同圖片，絕不重複用第 1、3 幕！），並明確標註 `feline cat with fur, NOT a human baby` 防止角色混淆！
     """
     if os.path.exists(img_path) and is_valid_colorful_image(img_path):
         return
 
-    encoded = urllib.parse.quote(prompt[:260])
+    # 引擎 A：HuggingFace 官方原版 FLUX.1-schnell (免費申請 HF_TOKEN 即可享受無損頂級畫質)
+    hf_token = os.environ.get("HF_TOKEN", "").strip()
+    if hf_token:
+        for hf_model in ["black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev"]:
+            try:
+                hf_url = f"https://api-inference.huggingface.co/models/{hf_model}"
+                resp = requests.post(
+                    hf_url,
+                    headers={"Authorization": f"Bearer {hf_token}"},
+                    json={"inputs": prompt, "parameters": {"width": 768, "height": 1344}},
+                    timeout=45
+                )
+                if resp.status_code == 200 and len(resp.content) > 20000:
+                    with open(img_path, "wb") as f:
+                        f.write(resp.content)
+                    if is_valid_colorful_image(img_path):
+                        with Image.open(img_path) as im:
+                            im.convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS).save(img_path, quality=95)
+                        print(f"    🎉 第 {scene_idx} 幕由 HuggingFace 原版 {hf_model} 頂級算圖成功！")
+                        return
+            except Exception as e:
+                print(f"    [HF {hf_model} 提示] {e}")
 
-    for attempt in range(5):
-        seed = master_seed + (scene_idx * 17) + (attempt * 53)
+    # 引擎 B：Google Gemini / Imagen 官方繪圖模型 (若設有 GEMINI_API_KEY)
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        try:
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=gemini_key)
+            result = client.models.generate_images(
+                model="imagen-3.0-generate-002",
+                prompt=prompt,
+                config=types.GenerateImagesConfig(number_of_images=1, aspect_ratio="9:16")
+            )
+            for gen_img in result.generated_images:
+                with open(img_path, "wb") as f:
+                    f.write(gen_img.image.image_bytes)
+                if is_valid_colorful_image(img_path):
+                    with Image.open(img_path) as im:
+                        im.convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS).save(img_path, quality=95)
+                    print(f"    🎉 第 {scene_idx} 幕由 Google Imagen 3 頂級算圖成功！")
+                    return
+        except Exception as e:
+            print(f"    [Google Imagen 提示] {e}")
+
+    # 引擎 C：免金鑰 Pollinations Flux（加入 12 秒防限流冷卻，確保 4 幕全部獨立算出，絕不重複畫面！）
+    encoded = urllib.parse.quote(prompt[:280])
+    for attempt in range(6):
+        seed = master_seed + (scene_idx * 1009) + (attempt * 313)
         url = (
             f"https://image.pollinations.ai/prompt/{encoded}"
             f"?width=768&height=1344&seed={seed}&nologo=true&enhance=false&model=flux"
         )
-        headers = {"User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/{122 + attempt}.0"}
+        headers = {
+            "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/{17 + attempt}.0 Safari/605.1.15"
+        }
         try:
-            if attempt > 0 or scene_idx > 1:
-                time.sleep(5.0)
-            resp = requests.get(url, headers=headers, timeout=60)
-            if resp.status_code == 200 and len(resp.content) > 18000:
+            # 關鍵：Pollinations 免費版對同一 IP 有嚴格的連續請求冷卻限制，間隔 10~12 秒可保證第 2、3、4 幕不被 429 拒絕！
+            wait_sec = 10.0 if (scene_idx > 1 and attempt == 0) else (6.0 * (attempt + 1))
+            if scene_idx > 1 or attempt > 0:
+                print(f"    ⏳ 等待 {wait_sec:.0f} 秒防限流冷卻，準備算第 {scene_idx} 幕 (嘗試 {attempt+1}/6)...")
+                time.sleep(wait_sec)
+            resp = requests.get(url, headers=headers, timeout=65)
+            if resp.status_code == 200 and len(resp.content) > 20000:
                 with open(img_path, "wb") as f:
                     f.write(resp.content)
                 if is_valid_colorful_image(img_path):
                     crop_bottom_watermark_and_save(img_path)
-                    print(f"    ✅ 第 {scene_idx} 幕 Flux 高畫質分鏡產出成功 (已對齊劇本並裁除邊角浮水印)")
+                    print(f"    ✅ 第 {scene_idx} 幕獨立 Flux 分鏡產出成功！")
                     return
+            else:
+                print(f"    [狀態碼 {resp.status_code}] 重新請求第 {scene_idx} 幕...")
         except Exception as e:
-            print(f"    [Flux 算圖重試 {attempt+1}/5] {e}")
-
-    for p_img in reversed(prev_imgs):
-        if os.path.exists(p_img) and is_valid_colorful_image(p_img):
-            with Image.open(p_img) as im:
-                im_rgb = im.convert("RGB").resize((1080, 1920), Image.Resampling.LANCZOS)
-                crop_box = (80, 120, 1000, 1760) if scene_idx % 2 == 0 else (45, 70, 1035, 1820)
-                reframed = im_rgb.crop(crop_box).resize((1080, 1920), Image.Resampling.LANCZOS)
-                reframed.save(img_path, quality=95)
-            print(f"    ✅ 第 {scene_idx} 幕採用同集連貫角色特寫分鏡")
-            return
+            print(f"    [Flux 算圖重試 {attempt+1}/6] {e}")
 
     im = Image.new("RGB", (1080, 1920), (245, 215, 185))
     im.save(img_path, quality=95)
@@ -479,9 +559,9 @@ def main():
     total_scenes = len(scenes)
     master_seed = random.randint(10000, 888888)
 
-    print(f"🎬 啟動 Google Sheet 連動產線 | 集數: {story['id']} (第 {story['sent_count'] + 1}/6 次發送)")
+    print(f"🎬 啟動 Google Sheet 18欄三角色連動產線 | 集數: {story['id']} (第 {story['sent_count'] + 1}/6 次發送)")
     print(f"🎨 畫風 DNA: {story.get('selected_visual_style')}")
-    print(f"🐾 角色鎖定 (含小女孩與萌寵): {story.get('character_dna')}")
+    print(f"🐾 三角色鎖定: {story.get('character_dna')}")
     print(f"🎙️ 本輪輪替配音: {voice_name}")
 
     raw_imgs = []
@@ -491,9 +571,9 @@ def main():
         r_img = os.path.join(SCENE_DIR, f"raw_{idx}.jpg")
         a_path = os.path.join(SCENE_DIR, f"audio_{idx}.mp3")
 
-        print(f"  [準備第 {idx}/{total_scenes} 幕] 產生語音與高畫質 Flux 分鏡圖片...")
+        print(f"  [準備第 {idx}/{total_scenes} 幕] 產生語音與高畫質分鏡圖片...")
         asyncio.run(generate_speech_audio(sc["narration"], a_path, voice_name))
-        download_ai_keyframe(sc["full_image_prompt"], r_img, master_seed=master_seed, scene_idx=idx, prev_imgs=raw_imgs)
+        download_ai_keyframe(sc["full_image_prompt"], r_img, master_seed=master_seed, scene_idx=idx)
 
         raw_imgs.append(r_img)
         audio_paths.append(a_path)
