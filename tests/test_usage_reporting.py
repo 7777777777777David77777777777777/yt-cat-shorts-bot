@@ -182,6 +182,10 @@ class UsageReportingTests(unittest.TestCase):
     def test_older_metadata_without_usage_is_explicitly_unknown(self):
         self.assertEqual(upload_youtube.format_image_usage({}), '產圖 token：未提供')
 
+    def test_sheet_usage_summary_includes_visual_style_for_the_current_version(self):
+        metadata = main.parse_episode_from_row(dict(webhook_episode(), sent_count=4))
+        self.assertIn('畫風：立體紙雕', upload_youtube.format_image_usage(metadata))
+
     def test_http_200_without_updated_status_is_not_claimed_as_success(self):
         response = Mock()
         response.json.return_value = {'status': 'error', 'message': 'wrong row'}

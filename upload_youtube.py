@@ -30,6 +30,8 @@ def format_image_usage(meta: dict) -> str:
         summary += f"；API 請求：{usage['api_requests']} 次"
     if usage.get("models_used"):
         summary += "；模型：" + ", ".join(usage["models_used"])
+    if meta.get("visual_style_name"):
+        summary += "；畫風：" + meta["visual_style_name"]
     return summary
 
 

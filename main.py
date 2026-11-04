@@ -30,6 +30,41 @@ VOICE_ROTATION = [
     "en-AU-NatashaNeural"
 ]
 
+# 同一集六次發送使用六種媒材；每版四幕共用同一個設定。
+VISUAL_STYLE_ROTATION = [
+    {
+        "id": "cinematic_3d", "name": "3D 電影動畫",
+        "prompt": "Stylized 3D animated film still, rounded expressive character designs, "
+                  "smooth modeled surfaces, soft cinematic lighting and dimensional environments.",
+    },
+    {
+        "id": "cel_anime", "name": "日系 2D 動畫",
+        "prompt": "Hand-drawn Japanese 2D cel animation, crisp ink outlines, flat color fills, "
+                  "hard-edged cel shading, simplified graphic forms and painted backgrounds.",
+    },
+    {
+        "id": "watercolor", "name": "水彩繪本",
+        "prompt": "Traditional watercolor storybook illustration on textured paper, translucent "
+                  "pigment washes, visible paper grain, soft bleeding edges and loose brushwork.",
+    },
+    {
+        "id": "clay_stop_motion", "name": "黏土定格",
+        "prompt": "Handcrafted clay stop-motion miniature set, sculpted clay characters, "
+                  "visible fingerprints and tool marks, matte clay surfaces and practical miniature lighting.",
+    },
+    {
+        "id": "paper_diorama", "name": "立體紙雕",
+        "prompt": "Layered cut-paper diorama, characters and scenery built from colored cardstock, "
+                  "crisp cut edges, folded paper shapes, visible stacked layers and cast paper shadows.",
+    },
+    {
+        "id": "photorealistic", "name": "真實風格",
+        "prompt": "Photorealistic live-action scene, natural human and animal anatomy, lifelike "
+                  "fur and fabric detail, physically realistic lighting, natural lens perspective "
+                  "and believable real-world environments.",
+    },
+]
+
 TITLE_HOOK_SUFFIXES = [
     "Wait For It! 👧🐱🐶 #shorts #cute",
     "Watch Until The End! 🐾❤️ #shorts #cat",
@@ -54,6 +89,9 @@ SHEET_HEADERS = {
 for _scene_number in range(1, 5):
     SHEET_HEADERS[f"s{_scene_number}_narration"] = f"第 {_scene_number} 幕：英文台詞"
     SHEET_HEADERS[f"s{_scene_number}_action"] = f"第 {_scene_number} 幕：畫面動作"
+
+# 保留舊 art_dna 傳輸欄名，兼容尚未更新的 Apps Script；D 欄可改名為劇本類型。
+SHEET_HEADER_ALIASES = {"art_dna": ("劇本類型", "故事類型", "劇本風格", "genre", "story_genre")}
 
 
 class NoPendingEpisodes(RuntimeError):
@@ -140,8 +178,9 @@ def episode_from_sheet_csv(csv_text: str) -> dict:
                 continue
             columns = {}
             for key, label in SHEET_HEADERS.items():
+                labels = [normalize_header(label)] + [normalize_header(alias) for alias in SHEET_HEADER_ALIASES.get(key, ())]
                 matches = [i for i, cell in enumerate(normalized)
-                           if cell == key or cell.startswith(normalize_header(label))]
+                           if cell == key or any(cell.startswith(alias) for alias in labels)]
                 if len(matches) != 1:
                     raise ValueError(f"Sheet 欄位缺少或重複：{label}；請使用三角色片單表頭")
                 columns[key] = matches[0]
@@ -169,12 +208,12 @@ def clean_prompt_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def build_image_prompt(art_dna: str, characters: list, scene_action: str) -> str:
-    """依 Sheet 組成完整分鏡指令，不覆寫角色物種或畫風。"""
+def build_image_prompt(visual_style: str, characters: list, scene_action: str) -> str:
+    """使用本版媒材與 Sheet 角色／動作，不混入 D 欄舊美術風格。"""
     references = "\n".join(f"{i}. {description}" for i, description in enumerate(characters, start=1))
     return (
         f"Scene action: {scene_action}\n"
-        f"Visual style: {art_dna}\n"
+        f"Visual style: {visual_style}\n"
         f"Character references:\n{references}\n"
         "Continuity: Keep each visible character's species, colors, markings, clothing "
         "and relative size consistent with these references across all scenes. "
@@ -199,10 +238,13 @@ def parse_episode_from_row(row_dict: dict) -> dict:
     """
     支援 18 欄「三角色獨立設定 (char1_dna, char2_dna, char3_dna) + 4 幕台詞與動作嚴格對齊」結構
     """
+    if isinstance(row_dict, dict) and "genre" in row_dict:
+        row_dict = dict(row_dict, art_dna=row_dict["genre"])
     validate_episode_row(row_dict)
     ep_id = str(row_dict["id"]).strip()
     sent_count = parse_sent_count(row_dict["sent_count"])
-    art_dna = clean_prompt_text(row_dict["art_dna"])
+    story_genre = str(row_dict["art_dna"]).strip()
+    visual_style = VISUAL_STYLE_ROTATION[sent_count % len(VISUAL_STYLE_ROTATION)]
     characters = [clean_prompt_text(row_dict[f"char{i}_dna"]) for i in range(1, 4)]
 
     raw_scenes = [
@@ -216,7 +258,7 @@ def parse_episode_from_row(row_dict: dict) -> dict:
     scenes = []
     for i, (narr, act) in enumerate(raw_scenes):
         clean_act = clean_prompt_text(act)
-        full_prompt = build_image_prompt(art_dna, characters, clean_act)
+        full_prompt = build_image_prompt(visual_style["prompt"], characters, clean_act)
         scenes.append({
             "narration": str(narr).strip(),
             "scene_action": str(act).strip(),
@@ -238,7 +280,10 @@ def parse_episode_from_row(row_dict: dict) -> dict:
         "row_index": row_dict.get("row_index", 8),
         "sent_count": sent_count,
         "target_sends": 6,
-        "selected_visual_style": art_dna,
+        "story_genre": story_genre,
+        "selected_visual_style": visual_style["prompt"],
+        "visual_style_id": visual_style["id"],
+        "visual_style_name": visual_style["name"],
         "character_dna": " | ".join(f"[{i}] {description}" for i, description in enumerate(characters, start=1)),
         "voice_name": VOICE_ROTATION[sent_count % len(VOICE_ROTATION)],
         "title": variant_title,
@@ -722,7 +767,8 @@ def main():
     master_seed = random.randint(10000, 888888)
 
     print(f"🎬 啟動 Google Sheet 18欄三角色連動產線 | 集數: {story['id']} (第 {story['sent_count'] + 1}/6 次發送)")
-    print(f"🎨 畫風 DNA: {story.get('selected_visual_style')}")
+    print(f"📝 Sheet D 欄設定：{story.get('story_genre')}")
+    print(f"🎨 本版畫風：{story.get('visual_style_name')}（第 {story['sent_count'] + 1}/6 版）")
     print(f"🐾 三角色鎖定: {story.get('character_dna')}")
     print(f"🎙️ 本輪輪替配音: {voice_name}")
 

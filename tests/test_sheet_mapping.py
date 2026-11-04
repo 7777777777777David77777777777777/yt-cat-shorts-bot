@@ -292,14 +292,17 @@ class ImagePromptTests(unittest.TestCase):
             self.assertNotIn('3D', prompt)
             self.assertIn('Close-up of Luna touching noses with Ollie.', prompt)
 
-    def test_sheet_style_is_preserved_without_forced_cinema_style(self):
-        for style in ['Hand-drawn watercolor', 'Macro wildlife photography, 85mm f/1.4', 'Soft 3D animation']:
-            with self.subTest(style=style):
+    def test_d_setting_is_preserved_separately_from_rotating_visual_style(self):
+        for genre in ['溫馨喜劇', '懸疑', 'Macro wildlife photography, 85mm f/1.4']:
+            with self.subTest(genre=genre):
                 data = webhook_episode()
-                data['art_dna'] = style
-                for scene in main.parse_episode_from_row(data)['scenes']:
+                data['art_dna'] = genre
+                episode = main.parse_episode_from_row(data)
+                self.assertEqual(episode['story_genre'], genre)
+                for scene in episode['scenes']:
                     prompt = scene['full_image_prompt']
-                    self.assertIn(f'Visual style: {style}', prompt)
+                    self.assertIn(f"Visual style: {main.VISUAL_STYLE_ROTATION[1]['prompt']}", prompt)
+                    self.assertNotIn(genre, prompt)
                     self.assertNotIn('Masterpiece 3D cinema quality', prompt)
                     self.assertIn('bottom 15%', prompt)
                     self.assertIn('9:16', prompt)
@@ -368,6 +371,72 @@ class ImagePromptTests(unittest.TestCase):
         get.assert_called_once()
         self.assertEqual(unquote(urlsplit(get.call_args.args[0]).path.removeprefix('/prompt/')), self.prompt)
         self.assertFalse(Path(self.image_path).exists())
+
+
+class VisualStyleRotationTests(unittest.TestCase):
+    def test_six_sends_select_six_distinct_media_in_order(self):
+        names, ids, prompts = [], [], []
+        for count in range(6):
+            data = webhook_episode()
+            data['sent_count'] = count
+            episode = main.parse_episode_from_row(data)
+            names.append(episode['visual_style_name'])
+            ids.append(episode['visual_style_id'])
+            prompts.append(episode['selected_visual_style'])
+            self.assertEqual(episode['sent_count'], count)
+        self.assertEqual(names, ['3D 電影動畫', '日系 2D 動畫', '水彩繪本', '黏土定格', '立體紙雕', '真實風格'])
+        self.assertEqual(len(set(ids)), 6)
+        self.assertEqual(len(set(prompts)), 6)
+
+    def test_genre_cast_and_four_scene_pairs_stay_fixed_across_all_six_versions(self):
+        source = webhook_episode()
+        source['art_dna'] = '溫馨喜劇'
+        cast = []
+        for count in range(6):
+            data = dict(source, sent_count=count)
+            before = data.copy()
+            episode = main.parse_episode_from_row(data)
+            self.assertEqual(data, before)
+            self.assertEqual(episode['story_genre'], '溫馨喜劇')
+            cast.append(episode['character_dna'])
+            for i, scene in enumerate(episode['scenes'], start=1):
+                self.assertEqual(scene['narration'], source[f's{i}_narration'])
+                self.assertEqual(scene['scene_action'], source[f's{i}_action'])
+                self.assertIn(episode['selected_visual_style'], scene['full_image_prompt'])
+        self.assertEqual(len(set(cast)), 1)
+
+    def test_all_four_scenes_use_only_the_selected_medium(self):
+        for count in range(6):
+            episode = main.parse_episode_from_row(dict(webhook_episode(), sent_count=count))
+            for scene in episode['scenes']:
+                for i, style in enumerate(main.VISUAL_STYLE_ROTATION):
+                    if i == count:
+                        self.assertIn(style['prompt'], scene['full_image_prompt'])
+                    else:
+                        self.assertNotIn(style['prompt'], scene['full_image_prompt'])
+
+    def test_resume_uses_sheet_count_and_next_episode_restarts_at_first_style(self):
+        resumed = main.parse_episode_from_row(dict(webhook_episode(), sent_count='4/6'))
+        self.assertEqual(resumed['visual_style_name'], '立體紙雕')
+        next_episode = main.parse_episode_from_row(dict(webhook_episode(), id='EP02', sent_count=0))
+        self.assertEqual(next_episode['visual_style_name'], '3D 電影動畫')
+
+    def test_new_genre_header_and_legacy_d_header_are_supported(self):
+        for label in ['劇本類型 (Genre)', '故事類型', HEADERS[3]]:
+            headers, row = HEADERS.copy(), ROW.copy()
+            headers[3], row[3] = label, '冒險喜劇'
+            with self.subTest(header=label):
+                episode = main.episode_from_sheet_csv(sheet_csv([row], headers))
+                self.assertEqual(episode['story_genre'], '冒險喜劇')
+                self.assertEqual(episode['visual_style_name'], '日系 2D 動畫')
+
+    def test_new_webhook_genre_key_is_accepted_without_changing_original_data(self):
+        data = webhook_episode()
+        del data['art_dna']
+        data['genre'] = '懸疑'
+        episode = main.parse_episode_from_row(data)
+        self.assertEqual(episode['story_genre'], '懸疑')
+        self.assertNotIn('art_dna', data)
 
 
 if __name__ == '__main__':
