@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -13,6 +14,35 @@ SCOPES = [
 TARGET_CHANNEL_ID = "UC5P8yj_8TUhOrFsdp0qn-IQ"
 
 
+def report_back_to_google_sheet(meta: dict, youtube_url: str):
+    """
+    【方案 B：自動回寫 Google Sheet】
+    當影片成功發佈到 YouTube 後，自動呼叫 Google Apps Script Webhook (`SHEET_WEBHOOK_URL`)：
+    1. 將該集的 `已發送次數` + 1 (例如 0 -> 1, ..., 5 -> 6)
+    2. 若未滿 6 次，狀態更新為 `連發中 (k/6)`；一旦滿 6 次，狀態自動改為 `已完成 (Completed)`，下一輪就會自動換下一集！
+    3. 將本次新發佈的 YouTube Shorts 網址追加記錄到 Q 欄
+    """
+    webhook_url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
+    if not webhook_url:
+        print("ℹ️ 尚未設定 SHEET_WEBHOOK_URL，略過試算表狀態回寫。")
+        return
+
+    payload = {
+        "action": "mark_sent",
+        "id": meta.get("id", "EP01"),
+        "row_index": meta.get("row_index", 0),
+        "new_sent_count": int(meta.get("sent_count", 0)) + 1,
+        "target_sends": int(meta.get("target_sends", 6)),
+        "youtube_url": youtube_url
+    }
+    try:
+        resp = requests.post(webhook_url, json=payload, timeout=20)
+        if resp.status_code == 200:
+            print(f"📊 已同步回寫 Google Sheet！集數 {payload['id']} 發送進度: {payload['new_sent_count']}/6")
+    except Exception as e:
+        print(f"⚠️ 回寫 Google Sheet 失敗 ({e})")
+
+
 def upload_short():
     client_id = os.environ.get("YT_CLIENT_ID", "").strip()
     client_secret = os.environ.get("YT_CLIENT_SECRET", "").strip()
@@ -20,7 +50,6 @@ def upload_short():
 
     if not (client_id and client_secret and refresh_token):
         print("⚠️ 尚未在 GitHub Secrets 設定 YT_CLIENT_ID / YT_CLIENT_SECRET / YT_REFRESH_TOKEN。")
-        print("影片已成功產出於 output/final_short.mp4，請於 GitHub Actions Artifacts 下載或補齊金鑰後自動上傳。")
         return
 
     creds = Credentials(
@@ -34,7 +63,6 @@ def upload_short():
 
     youtube = build("youtube", "v3", credentials=creds)
 
-    # 安全鎖：驗證當前授權的頻道是否為指定的新頻道 (UC5P8yj_8TUhOrFsdp0qn-IQ)，避免誤發到個人主帳號
     ch_resp = youtube.channels().list(part="snippet", mine=True).execute()
     items = ch_resp.get("items", [])
     if not items:
@@ -46,8 +74,7 @@ def upload_short():
     print(f"🔍 目前授權頻道: {current_channel_title} (ID: {current_channel_id})")
 
     if current_channel_id != TARGET_CHANNEL_ID:
-        print(f"🛑 安全攔截！目前 Token 授權的頻道 ID ({current_channel_id}) 與你指定的新頻道 ({TARGET_CHANNEL_ID}) 不符！")
-        print("請重新執行 get_refresh_token.py，並在彈出視窗中點選你的新品牌頻道，確保不會誤發到個人主頻道。")
+        print(f"🛑 安全攔截！目前授權頻道 ({current_channel_id}) 與目標新頻道 ({TARGET_CHANNEL_ID}) 不符！")
         sys.exit(1)
 
     with open("output/metadata.json", "r", encoding="utf-8") as f:
@@ -58,11 +85,10 @@ def upload_short():
             "title": meta["title"][:100],
             "description": meta["description"],
             "tags": meta.get("tags", ["shorts", "cat", "cute"]),
-            "categoryId": "15"  # 15 = Pets & Animals (寵物與動物，全球高流量分類)
+            "categoryId": "15"
         },
         "status": {
             "privacyStatus": "public",
-            # 關鍵獲利設定：設為 False (非專為兒童打造)，保住個人化高單價廣告與留言區
             "selfDeclaredMadeForKids": False
         }
     }
@@ -70,8 +96,11 @@ def upload_short():
     media = MediaFileUpload("output/final_short.mp4", chunksize=-1, resumable=True, mimetype="video/mp4")
     request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
     response = request.execute()
-    print(f"🎉 已成功自動上傳至你的新頻道【{current_channel_title}】！")
-    print(f"🎬 影片網址: https://youtube.com/shorts/{response['id']}")
+    yt_url = f"https://youtube.com/shorts/{response['id']}"
+    print(f"🎉 已成功上傳至新頻道【{current_channel_title}】！網址: {yt_url}")
+
+    # 自動回寫發送次數 (1/6 ~ 6/6) 與網址至 Google Sheet
+    report_back_to_google_sheet(meta, yt_url)
 
 
 if __name__ == "__main__":
