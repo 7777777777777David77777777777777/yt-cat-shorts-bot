@@ -34,6 +34,7 @@ jobs:
       - name: 5. Fetch Episode from Google Sheet and Render Video
         env:
           SHEET_WEBHOOK_URL: ${{ secrets.SHEET_WEBHOOK_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python main.py
 
