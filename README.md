@@ -173,7 +173,11 @@ output/final_short.mp4
 output/metadata.json
 ```
 
-目前第 7 步備份沒有設定 `always()`；若第 6 步上傳失敗，備份通常會被略過。若要失敗時仍保存成品，需另行修改工作流程，這項功能尚未實作。
+第 7 步備份使用 `always()`：翻譯或上傳失敗時，仍會備份已生成的 MP4 與 metadata。
+翻譯失敗的模型、HTTP 代碼及經遮蔽的原因會寫入日誌及 metadata 的 `translation_error`。
+若只需檢查翻譯，可手動執行 **Check Taiwan Chinese Translation (no video upload)**；
+此流程僅送出一個短句翻譯請求，不產圖、不上傳 YouTube、不回寫 Sheet，文字請求依 Google 專案計費。
+只有修改該診斷 workflow 本身時會自動觸發檢查；一般程式推送不會自動呼叫翻譯 API。
 
 目前產圖服務全部失敗時，程式仍可能以純色圖合成影片。既有圖片檢查只驗證檔案與色彩變化，無法確認角色數量、物種、肢體、體型比例或情節是否正確；公開發布前應檢查成品。YouTube 上傳成功但 Sheet 回寫失敗時，發送次數可能未前進，重新執行有重複發布的風險。
 

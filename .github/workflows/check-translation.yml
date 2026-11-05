@@ -1,0 +1,49 @@
+name: Check Taiwan Chinese Translation (no video upload)
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/check-translation.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-translation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - name: One short translation request (no YouTube or Sheet credentials)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_TRANSLATION_MODEL: ${{ vars.GEMINI_TRANSLATION_MODEL || 'gemini-2.5-flash-lite' }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from upload_youtube import translate_zh_tw
+          try:
+              translated, usage = translate_zh_tw({
+                  'title': 'A kitten meets a gentle dog',
+                  'description': 'A story about friendship. EP01 #shorts'})
+              print('::notice title=Translation check::Success')
+              Path('translation-check.json').write_text(json.dumps(
+                  {'translation': translated, 'usage': usage}, ensure_ascii=False, indent=2))
+          except RuntimeError as exc:
+              message = str(exc).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print('::error title=Translation check::' + message)
+              Path('translation-check.json').write_text(json.dumps({'error': str(exc)}, ensure_ascii=False))
+              raise SystemExit(1)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: translation-check-${{ github.run_number }}
+          path: translation-check.json
+          retention-days: 7

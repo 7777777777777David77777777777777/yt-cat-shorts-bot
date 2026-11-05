@@ -50,6 +50,7 @@ jobs:
           python upload_youtube.py
 
       - name: 7. Backup Video Artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cat-short-run-${{ github.run_number }}

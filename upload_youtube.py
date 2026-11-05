@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 import requests
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -12,6 +13,25 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly"
 ]
 TARGET_CHANNEL_ID = "UC5P8yj_8TUhOrFsdp0qn-IQ"
+
+
+def safe_translation_error(exc):
+    code = getattr(exc, "code", None)
+    status = getattr(exc, "status", None)
+    label = type(exc).__name__
+    if isinstance(code, int):
+        label += f" HTTP {code}"
+    if isinstance(status, str) and re.fullmatch(r"[A-Z_]+", status):
+        label += f" {status}"
+    message = getattr(exc, "message", None)
+    message = message if isinstance(message, str) else str(exc)
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if key:
+        message = message.replace(key, "[REDACTED]")
+    message = re.sub(r"AIza[A-Za-z0-9_-]+", "[REDACTED]", message)
+    message = re.sub(r"(?i)([?&](?:key|access_token)=)[^&\s\"']+", r"\1[REDACTED]", message)
+    message = " ".join(message.split())[:1000]
+    return f"{label}: {message}"
 
 
 def validate_zh_tw_translation(value):
@@ -65,8 +85,7 @@ def translate_zh_tw(meta):
             )
             translation = validate_zh_tw_translation(json.loads(response.text or ""))
     except Exception as exc:
-        # SDK errors may contain request details; never log API keys or raw response bodies.
-        raise RuntimeError(f"中文（台灣）翻譯失敗（{type(exc).__name__}）；已停止上傳") from None
+        raise RuntimeError(f"中文（台灣）翻譯失敗（模型 {model}）：{safe_translation_error(exc)}；已停止上傳") from None
     usage = {"provider": "google", "model": model, "language": "zh-TW"}
     metadata = response.usage_metadata
     for field in ("prompt_token_count", "candidates_token_count", "total_token_count"):
@@ -177,7 +196,14 @@ def upload_short():
     with open("output/metadata.json", "r", encoding="utf-8") as f:
         meta = json.load(f)
 
-    translation, translation_usage = translate_zh_tw(meta)
+    try:
+        translation, translation_usage = translate_zh_tw(meta)
+    except RuntimeError as exc:
+        meta["translation_error"] = str(exc)
+        with open("output/metadata.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+        raise
+    meta.pop("translation_error", None)
     meta["localizations"] = dict(meta.get("localizations") or {}, **{"zh-TW": translation})
     meta["translation_usage"] = translation_usage
     with open("output/metadata.json", "w", encoding="utf-8") as f:

@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 import httpx
 from google import genai
 from google.genai import types
+from google.genai import errors
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import upload_youtube as upload
@@ -78,6 +79,17 @@ class LocalizationTests(unittest.TestCase):
         self.assertIn("產圖 token：未提供", text)
         self.assertIn("中文翻譯 token：155", text)
 
+    def test_http_reason_is_preserved_without_exposing_keys(self):
+        error = errors.ClientError(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+            "message": "Quota exceeded for model. key=secret-test-key https://host.test/?key=other-secret"}})
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "secret-test-key"}):
+            message = upload.safe_translation_error(error)
+        self.assertIn("HTTP 429", message)
+        self.assertIn("RESOURCE_EXHAUSTED", message)
+        self.assertIn("Quota exceeded", message)
+        self.assertNotIn("secret-test-key", message)
+        self.assertNotIn("other-secret", message)
+
     def run_mock_upload(self, directory, translate, youtube, report):
         with contextlib.chdir(directory), \
                 patch.dict(os.environ, {"YT_CLIENT_ID": "test", "YT_CLIENT_SECRET": "test", "YT_REFRESH_TOKEN": "test"}), \
@@ -125,6 +137,8 @@ class LocalizationTests(unittest.TestCase):
             (output / "metadata.json").write_text(json.dumps({"title": "title", "description": "description"}))
             with self.assertRaisesRegex(RuntimeError, "Translation unavailable"):
                 self.run_mock_upload(temp, translate, youtube, report)
+            saved = json.loads((output / "metadata.json").read_text())
+            self.assertEqual(saved["translation_error"], "Translation unavailable")
         youtube.videos.assert_not_called()
         report.assert_not_called()
 
