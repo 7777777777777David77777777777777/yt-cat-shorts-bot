@@ -1,11 +1,24 @@
 # Reuse the workflow path registered on main so Run workflow can select develop.
 # This branch deliberately contains no production upload job or scheduled trigger.
-name: EP01 Animation Preview (develop only)
-run-name: EP01 animation preview · ${{ github.ref_name }} · ${{ inputs.scene_count || '4' }} scenes
+name: Gemini Models and EP01 Preview (develop only)
+run-name: ${{ inputs.task || 'list_models' }} · ${{ github.ref_name }}
 
 on:
+  push:
+    branches: [develop]
+    paths:
+      - preview_ep01.py
+      - tests/test_ep01_preview.py
+      - '.github/workflows/Hourly 6x Cute Cat YouTube Shorts Factory.yml'
   workflow_dispatch:
     inputs:
+      task:
+        description: 'list_models = read-only model list; preview_ep01 = paid animation test'
+        type: choice
+        options:
+          - list_models
+          - preview_ep01
+        default: list_models
       scene_count:
         description: '1 = first-scene test; 4 = full EP01 (up to four paid 8-second Veo clips)'
         type: choice
@@ -23,7 +36,7 @@ concurrency:
 
 jobs:
   preview-ep01:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop'
+    if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -31,6 +44,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install FFmpeg and fonts
+        if: github.event_name == 'workflow_dispatch' && inputs.task == 'preview_ep01'
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-liberation
@@ -44,21 +58,30 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt 'google-genai==2.34.0'
 
-      - name: Verify preview before paid API requests
+      - name: Verify model lookup and preview
         run: python -m unittest discover -s tests -p 'test_ep01_preview.py' -v
 
+      - name: List models only (no generation requests)
+        if: (inputs.task || 'list_models') == 'list_models'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python preview_ep01.py --list-models
+
       - name: Check available Veo models, then generate EP01 (no YouTube or Sheet writeback)
+        if: github.event_name == 'workflow_dispatch' && inputs.task == 'preview_ep01'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_VIDEO_MODEL: ${{ vars.GEMINI_VIDEO_MODEL }}
           SCENE_COUNT: ${{ inputs.scene_count || '4' }}
         run: python preview_ep01.py --scene-count "$SCENE_COUNT"
 
-      - name: Downloadable MP4 and diagnostics
+      - name: Downloadable model list or MP4 and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: EP01-animation-preview-${{ github.run_number }}-${{ github.run_attempt }}
-          path: output/ep01-preview/
+          name: ${{ inputs.task || 'list_models' }}-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            output/gemini-models/
+            output/ep01-preview/
           if-no-files-found: warn
           retention-days: 7

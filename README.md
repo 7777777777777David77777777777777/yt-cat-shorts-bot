@@ -2,7 +2,16 @@
 
 ## develop：EP01 圖生影片測試
 
-這個分支的 Actions 僅供手動預覽。從你提供的 Excel 匯出檔擷取 EP01 劇本，存於
+**查詢目前金鑰的模型清單**：Actions → 原有 workflow → Run workflow → Branch 選 `develop`，
+`task` 選 `list_models`（預設）。執行完成後，在該次執行頁面的 Summary 查看模型表格，
+或展開 **List models only** 步驟查看日誌；Artifacts 的 `list_models-…` 包含 `models.json` 與 `models.md`。
+只查詢 Gemini Developer API v1beta 的模型名稱、顯示名稱與支援方法，讀完所有分頁；
+不會產圖、生成影片、上傳 YouTube 或回寫 Sheet，也不輸出金鑰。
+列出的模型不保證生成權限或剩餘額度；`generateContent` 本身不能判定是否支援產圖。
+推送 `develop` 的測試程式或 workflow 修改時，也會自動執行這個只讀模型查詢；
+只有手動選擇 `preview_ep01` 才會進行付費生成。
+
+這個分支提供只讀模型查詢與手動影片預覽。影片測試從你提供的 Excel 匯出檔擷取 EP01 劇本，存於
 `tests/fixtures/ep01.json`；不依賴線上片單的完成狀態，不會讀寫線上 Sheet。
 預覽固定採第一版 3D 電影動畫，保留 Mia 的原始年齡與四幕故事；沒有更換詞彙來隱藏年齡。
 這份快照不會自動同步你後來在 Sheet 的修改。
@@ -10,8 +19,9 @@
 1. 前往 GitHub **Actions → Hourly 6x Cute Cat YouTube Shorts Factory → Run workflow**。
    左側名稱來自預設分支，這裡沿用同一個 workflow 檔案路徑。
 2. **Branch 選 `develop`**。`main` 是正式發布流程，請核對分支後再按綠色按鈕。
-   若出現 `scene_count`，選 `4` 測完整 EP01，或 `1` 僅測第一幕；未提供時為 `4`。
-3. 執行完成後，在該次執行頁面的 **Artifacts** 下載 `EP01-animation-preview-…`。
+   `task` 選 **`preview_ep01`** 才會送出付費生成請求。
+   `scene_count` 選 `4` 測完整 EP01，或 `1` 僅測第一幕；未提供時為 `4`。
+3. 執行完成後，在該次執行頁面的 **Artifacts** 下載 `preview_ep01-…`。
    成功時解壓縮後播放 `EP01_animation_preview.mp4`；也保留各幕原始影片、圖片、字幕和 metadata。
 
 僅需既有 repository Actions secret `GEMINI_API_KEY`。使用 `gemini-2.5-flash-image` 產圖。

@@ -251,6 +251,64 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertTrue(all(url.path.endswith("/models") for url in urls))
 
 
+class ModelCatalogTests(unittest.TestCase):
+    def client(self):
+        client = Mock()
+        client.models.list.return_value = [
+            types.Model(name="models/gemini-test", display_name="Gemini Test",
+                        supported_actions=["generateContent", "countTokens"]),
+            types.Model(name="models/embedding-test", supported_actions=["embedContent"]),
+            types.Model(name="models/other-model")]
+        return client
+
+    def test_full_catalog_includes_non_video_models_and_raw_supported_methods(self):
+        client = self.client()
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            report = preview.export_model_catalog(client, directory, directory / "summary.md")
+            stored = json.loads((directory / "models.json").read_text())
+            self.assertEqual(stored, report)
+            self.assertEqual(report["model_count"], 3)
+            self.assertEqual(report["models"][0]["supported_actions"], ["generateContent", "countTokens"])
+            self.assertEqual(report["models"][2]["supported_actions"], [])
+            self.assertEqual((directory / "models.md").read_text(), (directory / "summary.md").read_text())
+            self.assertEqual(report["image_generation_requests"], 0)
+            self.assertEqual(report["video_generation_requests"], 0)
+        client.models.generate_content.assert_not_called()
+        client.models.generate_videos.assert_not_called()
+
+    def test_cli_list_mode_never_calls_preview_or_live_sheet(self):
+        client = self.client()
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(preview, "ROOT", Path(temp)), \
+                patch.object(preview.genai, "Client", return_value=client), \
+                patch.object(preview.sys, "argv", ["preview_ep01.py", "--list-models"]), \
+                patch.dict(preview.os.environ, {"GEMINI_API_KEY": "secret-test-only", "GITHUB_STEP_SUMMARY": ""}), \
+                patch.object(preview, "run_preview", side_effect=AssertionError), \
+                patch.object(preview.factory.requests, "get", side_effect=AssertionError), \
+                patch.object(preview.factory.requests, "post", side_effect=AssertionError):
+            self.assertEqual(preview.main(), 0)
+            content = (Path(temp) / "output/gemini-models/models.json").read_text()
+            self.assertNotIn("secret-test-only", content)
+            self.assertFalse((Path(temp) / "output/ep01-preview").exists())
+        client.models.generate_content.assert_not_called()
+        client.models.generate_videos.assert_not_called()
+        client.close.assert_called_once()
+
+    def test_failed_catalog_exports_redacted_error_without_generation(self):
+        client = self.client()
+        client.models.list.side_effect = RuntimeError("lookup failed with secret-test-only")
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.dict(preview.os.environ, {"GEMINI_API_KEY": "secret-test-only"}):
+            with self.assertRaisesRegex(RuntimeError, "lookup failed"):
+                preview.export_model_catalog(client, temp)
+            content = (Path(temp) / "models.json").read_text()
+            self.assertEqual(json.loads(content)["status"], "failed")
+            self.assertNotIn("secret-test-only", content)
+        client.models.generate_content.assert_not_called()
+        client.models.generate_videos.assert_not_called()
+
+
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
 class RenderIntegrationTests(unittest.TestCase):
     def test_motion_clips_retimed_with_complete_audio_and_portrait_output(self):

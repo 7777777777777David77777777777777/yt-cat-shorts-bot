@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -43,6 +44,52 @@ def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def list_model_catalog(client):
+    """Read every page of base models; do not infer image support from generateContent."""
+    return [{"name": model.name, "display_name": model.display_name,
+             "supported_actions": list(model.supported_actions or [])}
+            for model in client.models.list(config=types.ListModelsConfig(page_size=100))
+            if model.name]
+
+
+def export_model_catalog(client, directory, summary_path=None):
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    report = {"status": "running", "api": "Gemini Developer API", "api_version": "v1beta",
+              "checked_at_taipei": datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds"),
+              "image_generation_requests": 0, "video_generation_requests": 0, "models": []}
+    try:
+        report["models"] = list_model_catalog(client)
+        report.update(status="completed", model_count=len(report["models"]))
+        print(f"ListModels returned {report['model_count']} models (v1beta). No generation requests.", flush=True)
+        lines = ["# Gemini API 模型清單", "",
+                 f"查詢時間（台灣）：{report['checked_at_taipei']}", "",
+                 "使用本次 Actions 的 GEMINI_API_KEY 查詢 Gemini Developer API v1beta。",
+                 "清單列出的功能不保證生成權限或剩餘額度；generateContent 本身不能判斷是否支援產圖。",
+                 "本次沒有送出產圖或影片生成請求。", "",
+                 "| 模型 ID | API 宣告支援的功能 |", "| --- | --- |"]
+        for item in report["models"]:
+            name = item["name"]
+            actions = ", ".join(item["supported_actions"]) or "未宣告"
+            print(f"{name} | {actions}", flush=True)
+            name = name.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+            actions = actions.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+            lines.append(f"| {name} | {actions} |")
+        if not report["models"]:
+            lines.append("| （API 回傳空清單） | — |")
+        markdown = "\n".join(lines) + "\n"
+        (directory / "models.md").write_text(markdown, encoding="utf-8")
+        if summary_path:
+            with open(summary_path, "a", encoding="utf-8") as summary:
+                summary.write(markdown)
+        return report
+    except Exception as error:
+        report.update(status="failed", error=safe_error(error))
+        raise
+    finally:
+        write_json(directory / "models.json", report)
+
+
 def select_video_model(client, requested_model=None, report=None):
     report = report if report is not None else {}
     requested_model = (requested_model or "").strip().removeprefix("models/")
@@ -50,11 +97,13 @@ def select_video_model(client, requested_model=None, report=None):
     eligible = set()
     print("Checking ListModels before any image/video generation...", flush=True)
     # Iterate the pager completely; the usable model can be on a later page.
-    for model in client.models.list(config=types.ListModelsConfig(page_size=100)):
-        name = (model.name or "").removeprefix("models/")
+    catalog = list_model_catalog(client)
+    report["all_listed_models"] = catalog
+    for model in catalog:
+        name = model["name"].removeprefix("models/")
         if not name.startswith("veo-"):
             continue
-        actions = list(model.supported_actions or [])
+        actions = model["supported_actions"]
         report["visible_veo_models"].append({"name": name, "supported_actions": actions})
         if {action.casefold() for action in actions} & {"predictlongrunning", "generatevideos"}:
             eligible.add(name)
@@ -321,6 +370,8 @@ def run_preview(client, directory, scene_count=4, image_model="gemini-2.5-flash-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--list-models", action="store_true",
+                        help="Only list models and supported methods; never generate images or video")
     parser.add_argument("--scene-count", type=int, choices=(1, 4), default=4)
     parser.add_argument("--video-model", default=os.environ.get("GEMINI_VIDEO_MODEL", ""),
                         help="Use a listed Veo model explicitly; default auto-selects a listed Fast/Lite model")
@@ -330,10 +381,15 @@ def main():
         parser.error("GEMINI_API_KEY is required (repository Actions secret)")
     client = genai.Client(
         api_key=key, vertexai=False,
-        http_options=types.HttpOptions(timeout=60000, retry_options=types.HttpRetryOptions(attempts=1)))
+        http_options=types.HttpOptions(api_version="v1beta", timeout=60000,
+                                       retry_options=types.HttpRetryOptions(attempts=1)))
     try:
-        run_preview(client, ROOT / "output/ep01-preview", scene_count=args.scene_count,
-                    video_model=args.video_model)
+        if args.list_models:
+            export_model_catalog(client, ROOT / "output/gemini-models",
+                                 summary_path=os.environ.get("GITHUB_STEP_SUMMARY"))
+        else:
+            run_preview(client, ROOT / "output/ep01-preview", scene_count=args.scene_count,
+                        video_model=args.video_model)
     except Exception as error:
         print(safe_error(error), file=sys.stderr)
         return 1
