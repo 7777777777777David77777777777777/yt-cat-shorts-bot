@@ -117,7 +117,9 @@ def upload_short():
             "title": meta["title"][:100],
             "description": meta["description"],
             "tags": meta.get("tags", ["shorts", "cat", "cute"]),
-            "categoryId": "15"
+            "categoryId": "15",
+            "defaultAudioLanguage": "en-US",
+            "defaultLanguage": "en-US"
         },
         "status": {
             "privacyStatus": "public",
