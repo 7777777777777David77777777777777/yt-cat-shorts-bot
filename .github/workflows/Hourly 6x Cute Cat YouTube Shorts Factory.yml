@@ -47,9 +47,10 @@ jobs:
       - name: Verify preview before paid API requests
         run: python -m unittest discover -s tests -p 'test_ep01_preview.py' -v
 
-      - name: Generate EP01 animation (no YouTube upload or Sheet writeback)
+      - name: Check available Veo models, then generate EP01 (no YouTube or Sheet writeback)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_VIDEO_MODEL: ${{ vars.GEMINI_VIDEO_MODEL }}
           SCENE_COUNT: ${{ inputs.scene_count || '4' }}
         run: python preview_ep01.py --scene-count "$SCENE_COUNT"
 

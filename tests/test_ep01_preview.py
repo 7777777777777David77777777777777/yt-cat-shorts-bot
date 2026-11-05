@@ -60,7 +60,7 @@ class PreviewTests(unittest.TestCase):
                     retry_options=types.HttpRetryOptions(attempts=1))) as client, \
                     patch.object(preview, "probe", return_value={
                         "streams": [{"codec_type": "video"}], "format": {"duration": "8"}}):
-                preview.generate_clip(client, preview.DEFAULT_VIDEO_MODEL, prompt, image,
+                preview.generate_clip(client, preview.PREFERRED_VIDEO_MODELS[0], prompt, image,
                                       directory / "clip.mp4", {}, lambda: None, float("inf"))
             self.assertEqual((directory / "clip.mp4").read_bytes(), b"downloaded-mp4")
         self.assertEqual(len(captured), 1)
@@ -103,6 +103,8 @@ class PreviewTests(unittest.TestCase):
 
     def test_filtered_first_scene_stops_before_other_images_and_preserves_diagnostics(self):
         client = Mock()
+        client.models.list.return_value = [types.Model(
+            name="models/veo-3.0-fast-generate-001", supported_actions=["predictLongRunning"])]
         client.models.generate_videos.return_value = operation(
             done=True, response=types.GenerateVideosResponse(
                 rai_media_filtered_count=1, rai_media_filtered_reasons=["Input not supported"]))
@@ -120,6 +122,7 @@ class PreviewTests(unittest.TestCase):
         client.files.download.assert_not_called()
         speech.assert_not_called()
         self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["video_model"], "veo-3.0-fast-generate-001")
         self.assertEqual(len(state["video_requests"]), 1)
         self.assertIn("operation_name", state["video_requests"][0])
 
@@ -166,6 +169,86 @@ class PreviewTests(unittest.TestCase):
             message = preview.safe_error(RuntimeError("private-value https://host.test/path?key=other-value&x=1"))
         self.assertNotIn("private-value", message)
         self.assertNotIn("other-value", message)
+
+
+class ModelDiscoveryTests(unittest.TestCase):
+    def client(self, *models):
+        client = Mock()
+        client.models.list.return_value = [types.Model(name=name, supported_actions=actions)
+                                           for name, actions in models]
+        return client
+
+    def test_only_a_listed_supported_model_is_selected(self):
+        client = self.client(
+            ("models/gemini-2.5-flash", ["generateContent"]),
+            ("models/veo-3.1-generate-preview", ["predictLongRunning"]),
+            ("models/veo-3.0-fast-generate-001", ["predictLongRunning"]))
+        report = {}
+        selected = preview.select_video_model(client, report=report)
+        self.assertEqual(selected, "veo-3.0-fast-generate-001")
+        self.assertEqual(report["selected_model"], selected)
+        self.assertEqual(len(report["visible_veo_models"]), 2)
+        client.models.generate_content.assert_not_called()
+        client.models.generate_videos.assert_not_called()
+
+    def test_only_regular_model_does_not_automatically_raise_spending(self):
+        client = self.client(("models/veo-3.1-generate-preview", ["predictLongRunning"]))
+        with self.assertRaisesRegex(RuntimeError, "GEMINI_VIDEO_MODEL"):
+            preview.select_video_model(client)
+
+    def test_explicit_listed_model_can_be_selected(self):
+        client = self.client(("models/veo-3.1-generate-preview", ["predictLongRunning"]))
+        selected = preview.select_video_model(client, "models/veo-3.1-generate-preview")
+        self.assertEqual(selected, "veo-3.1-generate-preview")
+
+    def test_video_name_without_video_action_is_rejected(self):
+        client = self.client(("models/veo-3.1-fast-generate-001", ["generateContent"]))
+        with self.assertRaisesRegex(RuntimeError, "產圖前停止"):
+            preview.select_video_model(client)
+
+    def test_missing_or_unlisted_override_stops_before_paid_requests(self):
+        for requested in (None, "veo-3.1-fast-generate-preview"):
+            with self.subTest(requested=requested), tempfile.TemporaryDirectory() as temp:
+                client = self.client(("models/gemini-2.5-flash-image", ["generateContent"]))
+                with self.assertRaisesRegex(RuntimeError, "產圖前停止"):
+                    preview.run_preview(client, temp, video_model=requested)
+                client.models.generate_content.assert_not_called()
+                client.models.generate_videos.assert_not_called()
+                state = json.loads((Path(temp) / "metadata.json").read_text())
+                self.assertEqual((state["status"], state["stage"]), ("failed", "model_discovery"))
+                self.assertEqual(state["model_discovery"]["visible_veo_models"], [])
+                self.assertEqual(state["image_requests"], [])
+                self.assertEqual(state["video_requests"], [])
+
+    def test_listing_error_is_saved_and_stops_before_paid_requests(self):
+        client = Mock()
+        client.models.list.side_effect = RuntimeError("ListModels permission denied")
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(RuntimeError, "permission denied"):
+                preview.run_preview(client, temp)
+            state = json.loads((Path(temp) / "metadata.json").read_text())
+            self.assertIn("permission denied", state["error"])
+        client.models.generate_content.assert_not_called()
+        client.models.generate_videos.assert_not_called()
+
+    def test_sdk_pagination_reads_later_page_and_converts_supported_methods(self):
+        urls = []
+
+        def transport(request):
+            urls.append(request.url)
+            self.assertEqual(request.method, "GET")
+            if request.url.params.get("pageToken") == "page-two":
+                return httpx.Response(200, json={"models": [{
+                    "name": "models/veo-3.1-lite-generate-preview",
+                    "supportedGenerationMethods": ["predictLongRunning"]}]})
+            return httpx.Response(200, json={"models": [{"name": "models/gemini-2.5-flash"}],
+                                            "nextPageToken": "page-two"})
+
+        with genai.Client(api_key="test-only", vertexai=False, http_options=types.HttpOptions(
+                httpx_client=httpx.Client(transport=httpx.MockTransport(transport)))) as client:
+            self.assertEqual(preview.select_video_model(client), "veo-3.1-lite-generate-preview")
+        self.assertEqual(len(urls), 2)
+        self.assertTrue(all(url.path.endswith("/models") for url in urls))
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")

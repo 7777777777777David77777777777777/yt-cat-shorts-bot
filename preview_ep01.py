@@ -20,7 +20,16 @@ import main as factory
 
 ROOT = Path(__file__).resolve().parent
 FIXTURE = ROOT / "tests/fixtures/ep01.json"
-DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
+# Select only IDs actually returned by this key's ListModels response.
+# Do not silently upgrade to a regular (potentially more expensive) model.
+PREFERRED_VIDEO_MODELS = (
+    "veo-3.1-fast-generate-001",
+    "veo-3.1-fast-generate-preview",
+    "veo-3.1-lite-generate-001",
+    "veo-3.1-lite-generate-preview",
+    "veo-3.0-fast-generate-001",
+    "veo-3.0-fast-generate-preview",
+)
 CLIP_SECONDS = 8
 MOTION = (
     "Mia gently holds the kitten; the kitten blinks and Titan calmly tilts his head.",
@@ -32,6 +41,47 @@ MOTION = (
 
 def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def select_video_model(client, requested_model=None, report=None):
+    report = report if report is not None else {}
+    requested_model = (requested_model or "").strip().removeprefix("models/")
+    report.update(requested_model=requested_model or None, visible_veo_models=[], selected_model=None)
+    eligible = set()
+    print("Checking ListModels before any image/video generation...", flush=True)
+    # Iterate the pager completely; the usable model can be on a later page.
+    for model in client.models.list(config=types.ListModelsConfig(page_size=100)):
+        name = (model.name or "").removeprefix("models/")
+        if not name.startswith("veo-"):
+            continue
+        actions = list(model.supported_actions or [])
+        report["visible_veo_models"].append({"name": name, "supported_actions": actions})
+        if {action.casefold() for action in actions} & {"predictlongrunning", "generatevideos"}:
+            eligible.add(name)
+    report["eligible_video_models"] = sorted(eligible)
+    for item in report["visible_veo_models"]:
+        print(f"Listed Veo model: {item['name']} | actions: {', '.join(item['supported_actions'])}", flush=True)
+    if requested_model:
+        if requested_model not in eligible:
+            raise RuntimeError(
+                f"GEMINI_VIDEO_MODEL={requested_model} 未被 ListModels 列為支援影片生成的 Veo 模型；"
+                "已在產圖前停止。請查看 metadata.json 的 model_discovery 清單，"
+                "確認金鑰所屬專案與模型存取權。")
+        selected = requested_model
+    else:
+        selected = next((name for name in PREFERRED_VIDEO_MODELS if name in eligible), None)
+        if not selected:
+            available = ", ".join(sorted(eligible)) or "無"
+            raise RuntimeError(
+                "ListModels 未列出可自動選用的 Fast/Lite 影片模型；已在產圖前停止。"
+                f"支援影片生成的可見 Veo 模型：{available}。"
+                "若要選用清單中的其他模型，確認其費率與參數後，"
+                "設定 repository Actions variable GEMINI_VIDEO_MODEL。"
+                "若清單為空，請確認金鑰所屬專案、付費用量與區域支援；"
+                "目前資訊不能判定是哪一項原因。")
+    report["selected_model"] = selected
+    print(f"Selected video model: {selected} (listing does not guarantee generation quota/access)", flush=True)
+    return selected
 
 
 def load_episode():
@@ -203,7 +253,7 @@ def safe_error(error):
 
 
 def run_preview(client, directory, scene_count=4, image_model="gemini-2.5-flash-image",
-                video_model=DEFAULT_VIDEO_MODEL):
+                video_model=None):
     directory = Path(directory).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     # A rerun in the same folder must not silently submit more paid generations.
@@ -214,7 +264,8 @@ def run_preview(client, directory, scene_count=4, image_model="gemini-2.5-flash-
     story = load_episode()
     story["scenes"] = story["scenes"][:scene_count]
     state = {"status": "running", "episode": story, "scene_count": scene_count,
-             "image_model": image_model, "video_model": video_model,
+             "image_model": image_model, "video_model": None, "stage": "model_discovery",
+             "model_discovery": {},
              "image_requests": [], "video_requests": [],
              "billing_note": "Image tokens are recorded when reported. Video generation is billed "
                              "by the provider; requested seconds are not a token count or price.",
@@ -224,6 +275,9 @@ def run_preview(client, directory, scene_count=4, image_model="gemini-2.5-flash-
     clips, audios = [], []
     deadline = time.monotonic() + 20 * 60
     try:
+        video_model = select_video_model(client, video_model, state["model_discovery"])
+        state["video_model"] = video_model
+        persist()
         for index, scene in enumerate(story["scenes"]):
             if time.monotonic() >= deadline:
                 raise TimeoutError("Preview time budget exhausted before next scene")
@@ -268,6 +322,8 @@ def run_preview(client, directory, scene_count=4, image_model="gemini-2.5-flash-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scene-count", type=int, choices=(1, 4), default=4)
+    parser.add_argument("--video-model", default=os.environ.get("GEMINI_VIDEO_MODEL", ""),
+                        help="Use a listed Veo model explicitly; default auto-selects a listed Fast/Lite model")
     args = parser.parse_args()
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
@@ -276,7 +332,8 @@ def main():
         api_key=key, vertexai=False,
         http_options=types.HttpOptions(timeout=60000, retry_options=types.HttpRetryOptions(attempts=1)))
     try:
-        run_preview(client, ROOT / "output/ep01-preview", scene_count=args.scene_count)
+        run_preview(client, ROOT / "output/ep01-preview", scene_count=args.scene_count,
+                    video_model=args.video_model)
     except Exception as error:
         print(safe_error(error), file=sys.stderr)
         return 1

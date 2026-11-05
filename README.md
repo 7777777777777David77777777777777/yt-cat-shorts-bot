@@ -14,9 +14,15 @@
 3. 執行完成後，在該次執行頁面的 **Artifacts** 下載 `EP01-animation-preview-…`。
    成功時解壓縮後播放 `EP01_animation_preview.mp4`；也保留各幕原始影片、圖片、字幕和 metadata。
 
-僅需既有 repository Actions secret `GEMINI_API_KEY`。使用
-`gemini-2.5-flash-image` 產圖，`veo-3.1-fast-generate-preview` 圖生影片；Veo 需要帳戶具備
-該模型的付費用量與存取權，產圖可用的金鑰不代表影片一定可用。
+僅需既有 repository Actions secret `GEMINI_API_KEY`。使用 `gemini-2.5-flash-image` 產圖。
+**產圖前**先用同一把金鑰查詢 ListModels，遍歷完整清單，只從回應列出的、宣告支援
+`predictLongRunning` 或 `generateVideos` 的 Veo 模型選用已知 Fast/Lite 型號。
+優先順序為 Veo 3.1 Fast（正式版、preview）、3.1 Lite（正式版、preview）、3.0 Fast（正式版、preview）。
+找不到就停止，不會猜模型名稱或自動切換到一般版。可見模型、支援功能及選擇結果存入
+`metadata.json` 的 `model_discovery`。若要明確指定清單中的其他 Veo 模型，在 repository
+**Settings → Secrets and variables → Actions → Variables** 設定 `GEMINI_VIDEO_MODEL` 為完整模型 ID；
+仍會先核對清單。Veo 需要帳戶具備該模型的付費用量與存取權，清單出現模型也不保證能生成。
+404 可能涉及模型名稱、API 方法或可見權限；清單為空時需核對專案、付費用量與區域支援，不能僅憑 404 判定原因。
 [Google 官方範例](https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started_Veo.ipynb)
 註明兒童人物限制，因此原版 EP01 **可能直接被拒絕**。測試如實保留角色設定；拒絕後停止，
 不改寫年齡、不重試其他措辭，也不以靜態圖片冒充成功的圖生影片。
