@@ -12,8 +12,14 @@
 4. YouTube 上傳成功後，透過 Webhook 更新 B 欄狀態、C 欄次數，並將網址、產圖用量、模型與畫風追加到 R 欄。
 5. 同一集完成六次發送後，下一次執行選取下一集。EP11、EP20 等集數也能讀取，沒有只支援前十集的限制。
 
-API 上傳時會自動指定影片原音語言 `defaultAudioLanguage` 為 `en-US`（英文／美國），
-不指定標題／說明的 `defaultLanguage`。原音語言標記不會限制觀看地區。
+API 上傳時會自動指定影片原音語言 `defaultAudioLanguage` 為 `en-US`（英文／美國）。
+上傳前會用現有 `GEMINI_API_KEY` 呼叫一次 `gemini-2.5-flash-lite`，把標題與說明翻成
+中文（台灣）繁體中文，透過 `localizations.zh-TW` 與英文原稿一併上傳。
+可用 repository Actions variable `GEMINI_TRANSLATION_MODEL` 指定其他相容文字模型。
+API 要求 `defaultLanguage: en` 標記標題／說明的英文原文；這不限制觀看地區。
+翻譯失敗或格式無效時會在影片上傳前停止，避免漏掉中文版本。翻譯結果及實際 token 用量保存於
+`output/metadata.json`，翻譯 token 也會追加在 R 欄用量摘要中，與產圖 token 分開。
+這會增加一次文字 API 請求，依 Google 專案額度計費；不新增中文配音或字幕。
 YouTube 自動配音需在 YouTube Studio 中依頻道可用功能啟用；目前上傳程式不控制此功能，
 也不保證每支影片都會生成其他語言配音。標題／說明的多語言版本是另一項本地化設定。
 只套用之後的上傳；既有影片的語言設定不會因此更新。
@@ -77,12 +83,13 @@ D 欄表頭可使用「劇本類型」「劇本類型與氛圍」「故事類型
 | 名稱 | 用途 | 目前工作流程 |
 | --- | --- | --- |
 | `SHEET_WEBHOOK_URL` | Apps Script 的 `/exec` 部署網址，用於私有片單讀取與狀態回寫 | 已傳入產片及上傳步驟 |
-| `GEMINI_API_KEY` | Google AI Studio API 金鑰，用於 Gemini 產圖 | 已傳入產片步驟 |
+| `GEMINI_API_KEY` | Google AI Studio API 金鑰，用於產圖及中文標題／說明翻譯 | 已傳入產片及上傳步驟 |
 | `YT_CLIENT_ID` | YouTube OAuth 用戶端 ID | 已傳入上傳步驟 |
 | `YT_CLIENT_SECRET` | YouTube OAuth 用戶端密鑰 | 已傳入上傳步驟 |
 | `YT_REFRESH_TOKEN` | 目標頻道的 OAuth refresh token | 已傳入上傳步驟 |
 | `HF_TOKEN` | 選填，啟用 Hugging Face 分支 | 尚未傳入，需另加至產片步驟的 `env` |
 | `GEMINI_IMAGE_MODEL` | 選填，指定其他相容的 Gemini 圖像模型 | 尚未傳入；預設為 `gemini-2.5-flash-image` |
+| `GEMINI_TRANSLATION_MODEL` | 選填，指定中文翻譯文字模型（Variable） | 已傳入上傳步驟；預設為 `gemini-2.5-flash-lite` |
 
 只在 GitHub 設定頁新增 Secret 或 Variable，不會自動把它傳入程式；選填設定也需在工作流程的 `env` 明確引用。`GEMINI_IMAGE_MODEL` 是模型名稱，不是密鑰。
 
