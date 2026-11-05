@@ -214,6 +214,10 @@ def build_image_prompt(visual_style: str, characters: list, scene_action: str) -
     return (
         f"Scene action: {scene_action}\n"
         f"Visual style: {visual_style}\n"
+        "Canvas and framing: A single full-bleed vertical 9:16 scene filling the entire canvas "
+        "edge to edge. Extend the scene background naturally to all four edges. "
+        "No borders, frames, margins, letterboxing, pillarboxing or inset pictures. "
+        "Do not place a horizontal illustration inside a vertical page.\n"
         f"Character references:\n{references}\n"
         "Continuity: Keep each visible character's species, colors, markings, clothing "
         "and relative size consistent with these references across all scenes. "
@@ -222,8 +226,9 @@ def build_image_prompt(visual_style: str, characters: list, scene_action: str) -
         "Shot and composition: Capture one clear moment of the scene action in a single image. "
         "Follow any framing specified in the scene action; otherwise use a medium shot "
         "at the subjects' eye level. Keep faces and key interactions away from the frame edges. "
-        "Leave the bottom 15% visually simple for subtitles. "
-        "Vertical 9:16 composition, clear subject separation, no lettering, captions or watermarks."
+        "Keep a simple, low-detail continuation of the scene background in the bottom 15% "
+        "for subtitles; this area must remain part of the full scene, without an empty strip "
+        "or separate panel. Clear subject separation, no lettering, captions or watermarks."
     )
 
 
