@@ -1,57 +1,63 @@
-name: Hourly 6x Cute Cat YouTube Shorts Factory
+# Reuse the workflow path registered on main so Run workflow can select develop.
+# This branch deliberately contains no production upload job or scheduled trigger.
+name: EP01 Animation Preview (develop only)
+run-name: EP01 animation preview · ${{ github.ref_name }} · ${{ inputs.scene_count || '4' }} scenes
 
 on:
-  schedule:
-    # 避開整點高峰：台灣時間 20:07, 21:07, 22:07, 23:07, 00:07, 01:07（UTC 12:07～17:07）
-    - cron: '7 12-17 * * *'
-  workflow_dispatch: # 保留手動按鈕，隨時可按 Run workflow 立即測試
+  workflow_dispatch:
+    inputs:
+      scene_count:
+        description: '1 = first-scene test; 4 = full EP01 (up to four paid 8-second Veo clips)'
+        type: choice
+        options:
+          - '4'
+          - '1'
+        default: '4'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ep01-animation-preview-develop
+  cancel-in-progress: false
 
 jobs:
-  generate-and-upload-short:
+  preview-ep01:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-
+    timeout-minutes: 35
     steps:
-      - name: 1. Checkout Repository
+      - name: Checkout develop
         uses: actions/checkout@v4
 
-      - name: 2. Install FFmpeg and Fonts
+      - name: Install FFmpeg and fonts
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-liberation fonts-noto-cjk
+          sudo apt-get install -y ffmpeg fonts-liberation
 
-      - name: 3. Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+          cache: pip
 
-      - name: 4. Install Dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt 'google-genai==2.34.0'
 
-      - name: 5. Fetch Episode from Google Sheet and Render Video
+      - name: Verify preview before paid API requests
+        run: python -m unittest discover -s tests -p 'test_ep01_preview.py' -v
+
+      - name: Generate EP01 animation (no YouTube upload or Sheet writeback)
         env:
-          SHEET_WEBHOOK_URL: ${{ secrets.SHEET_WEBHOOK_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          python main.py
+          SCENE_COUNT: ${{ inputs.scene_count || '4' }}
+        run: python preview_ep01.py --scene-count "$SCENE_COUNT"
 
-      - name: 6. Upload to YouTube and Update Sheet (1/6 to 6/6)
-        env:
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-          SHEET_WEBHOOK_URL: ${{ secrets.SHEET_WEBHOOK_URL }}
-        run: |
-          python upload_youtube.py
-
-      - name: 7. Backup Video Artifact
+      - name: Downloadable MP4 and diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cat-short-run-${{ github.run_number }}
-          path: |
-            output/final_short.mp4
-            output/metadata.json
+          name: EP01-animation-preview-${{ github.run_number }}-${{ github.run_attempt }}
+          path: output/ep01-preview/
+          if-no-files-found: warn
           retention-days: 7

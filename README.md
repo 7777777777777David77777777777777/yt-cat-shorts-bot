@@ -1,5 +1,39 @@
 # Cute Cat Shorts Factory
 
+## develop：EP01 圖生影片測試
+
+這個分支的 Actions 僅供手動預覽。從你提供的 Excel 匯出檔擷取 EP01 劇本，存於
+`tests/fixtures/ep01.json`；不依賴線上片單的完成狀態，不會讀寫線上 Sheet。
+預覽固定採第一版 3D 電影動畫，保留 Mia 的原始年齡與四幕故事；沒有更換詞彙來隱藏年齡。
+這份快照不會自動同步你後來在 Sheet 的修改。
+
+1. 前往 GitHub **Actions → Hourly 6x Cute Cat YouTube Shorts Factory → Run workflow**。
+   左側名稱來自預設分支，這裡沿用同一個 workflow 檔案路徑。
+2. **Branch 選 `develop`**。`main` 是正式發布流程，請核對分支後再按綠色按鈕。
+   若出現 `scene_count`，選 `4` 測完整 EP01，或 `1` 僅測第一幕；未提供時為 `4`。
+3. 執行完成後，在該次執行頁面的 **Artifacts** 下載 `EP01-animation-preview-…`。
+   成功時解壓縮後播放 `EP01_animation_preview.mp4`；也保留各幕原始影片、圖片、字幕和 metadata。
+
+僅需既有 repository Actions secret `GEMINI_API_KEY`。使用
+`gemini-2.5-flash-image` 產圖，`veo-3.1-fast-generate-preview` 圖生影片；Veo 需要帳戶具備
+該模型的付費用量與存取權，產圖可用的金鑰不代表影片一定可用。
+[Google 官方範例](https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started_Veo.ipynb)
+註明兒童人物限制，因此原版 EP01 **可能直接被拒絕**。測試如實保留角色設定；拒絕後停止，
+不改寫年齡、不重試其他措辭，也不以靜態圖片冒充成功的圖生影片。
+
+四幕依序處理，每幕最多一次產圖及一次 8 秒影片請求。第一幕影片通過後才繼續下一幕；
+完整測試最多請求 4 張圖片與 32 秒影片，仍可能有失敗請求的費用，實際計費依供應商。
+SDK 不自動重送請求。每幕等待最長 8 分鐘，全程生成等待預算 20 分鐘。
+手動重新執行會重新產生費用；逾時時先查看 metadata 中的 operation ID，避免重複送單。
+
+完成的預覽為 720×1280、24fps、H.264/AAC MP4。保留完整配音及字幕，丟棄 Veo 原生音訊；
+各幕影片會調整播放速度以配合該幕旁白長度，調整比例記錄在 metadata，沒有嘴型同步。
+字幕時間依文字分段估算。畫面以等比例裁切鋪滿，沒有拉伸；圖片內已畫出的邊框仍需人工檢查。
+失敗時 Actions 也會備份已取得的素材與錯誤資訊；沒有成功影片時不會產生假的成片。
+
+此測試 job 沒有 YouTube 上傳步驟或 YouTube／Sheet credentials，沒有排程，也沒有 Sheet POST。
+以下章節描述 `main` 分支的正式產片流程；`main.py`、上傳程式與 Apps Script 未因本次實驗修改。
+
 從 Google Sheet 讀取四幕劇本，產生配音與分鏡圖片，合成直式 Shorts，再上傳 YouTube 並回寫發送紀錄。
 
 目標頻道：[PET PET](https://www.youtube.com/channel/UC5P8yj_8TUhOrFsdp0qn-IQ)。目前 `upload_youtube.py` 會核對授權頻道 ID，若與 `UC5P8yj_8TUhOrFsdp0qn-IQ` 不符就停止上傳。
