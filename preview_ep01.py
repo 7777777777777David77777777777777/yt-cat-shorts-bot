@@ -90,6 +90,17 @@ def export_model_catalog(client, directory, summary_path=None):
         write_json(directory / "models.json", report)
 
 
+def emit_model_notices(report):
+    """Expose model IDs in the run's annotations, without credentials or API payloads."""
+    names = [item["name"] for item in report["models"]]
+    for start in range(0, max(len(names), 1), 25):
+        message = "; ".join(names[start:start + 25]) or "ListModels returned no model IDs."
+        # Workflow-command data escaping prevents newlines from injecting commands.
+        message = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::notice title=Gemini API model IDs ({start + 1 if names else 0}-{min(start + 25, len(names))} "
+              f"of {len(names)})::{message}", flush=True)
+
+
 def select_video_model(client, requested_model=None, report=None):
     report = report if report is not None else {}
     requested_model = (requested_model or "").strip().removeprefix("models/")
@@ -385,8 +396,10 @@ def main():
                                        retry_options=types.HttpRetryOptions(attempts=1)))
     try:
         if args.list_models:
-            export_model_catalog(client, ROOT / "output/gemini-models",
-                                 summary_path=os.environ.get("GITHUB_STEP_SUMMARY"))
+            report = export_model_catalog(client, ROOT / "output/gemini-models",
+                                          summary_path=os.environ.get("GITHUB_STEP_SUMMARY"))
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                emit_model_notices(report)
         else:
             run_preview(client, ROOT / "output/ep01-preview", scene_count=args.scene_count,
                         video_model=args.video_model)

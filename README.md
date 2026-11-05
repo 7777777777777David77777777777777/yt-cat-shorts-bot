@@ -5,6 +5,7 @@
 **查詢目前金鑰的模型清單**：Actions → 原有 workflow → Run workflow → Branch 選 `develop`，
 `task` 選 `list_models`（預設）。執行完成後，在該次執行頁面的 Summary 查看模型表格，
 或展開 **List models only** 步驟查看日誌；Artifacts 的 `list_models-…` 包含 `models.json` 與 `models.md`。
+模型 ID 也會分組顯示在執行頁面的 Annotations notice；不包含金鑰或帳戶計費資料。
 只查詢 Gemini Developer API v1beta 的模型名稱、顯示名稱與支援方法，讀完所有分頁；
 不會產圖、生成影片、上傳 YouTube 或回寫 Sheet，也不輸出金鑰。
 列出的模型不保證生成權限或剩餘額度；`generateContent` 本身不能判定是否支援產圖。

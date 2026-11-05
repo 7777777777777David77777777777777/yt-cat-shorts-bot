@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import io
 import json
 from pathlib import Path
@@ -283,7 +284,8 @@ class ModelCatalogTests(unittest.TestCase):
                 patch.object(preview, "ROOT", Path(temp)), \
                 patch.object(preview.genai, "Client", return_value=client), \
                 patch.object(preview.sys, "argv", ["preview_ep01.py", "--list-models"]), \
-                patch.dict(preview.os.environ, {"GEMINI_API_KEY": "secret-test-only", "GITHUB_STEP_SUMMARY": ""}), \
+                patch.dict(preview.os.environ, {"GEMINI_API_KEY": "secret-test-only", "GITHUB_STEP_SUMMARY": "",
+                                               "GITHUB_ACTIONS": ""}), \
                 patch.object(preview, "run_preview", side_effect=AssertionError), \
                 patch.object(preview.factory.requests, "get", side_effect=AssertionError), \
                 patch.object(preview.factory.requests, "post", side_effect=AssertionError):
@@ -294,6 +296,17 @@ class ModelCatalogTests(unittest.TestCase):
         client.models.generate_content.assert_not_called()
         client.models.generate_videos.assert_not_called()
         client.close.assert_called_once()
+
+    def test_notice_keeps_all_model_ids_and_escapes_workflow_commands(self):
+        names = [f"models/test-{i}" for i in range(28)] + ["models/test\n::error::unexpected%"]
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            preview.emit_model_notices({"models": [{"name": name} for name in names]})
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all(line.startswith("::notice title=Gemini API model IDs") for line in lines))
+        self.assertIn("models/test-27", output.getvalue())
+        self.assertIn("%0A::error::unexpected%25", output.getvalue())
 
     def test_failed_catalog_exports_redacted_error_without_generation(self):
         client = self.client()
