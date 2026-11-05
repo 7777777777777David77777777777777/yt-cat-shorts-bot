@@ -60,7 +60,7 @@ def translate_zh_tw(meta):
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
         raise RuntimeError("缺少 GEMINI_API_KEY，無法新增中文（台灣）標題／說明；已停止上傳")
-    model = os.environ.get("GEMINI_TRANSLATION_MODEL", "").strip() or "gemini-2.5-flash-lite"
+    model = os.environ.get("GEMINI_TRANSLATION_MODEL", "").strip() or "gemini-3.5-flash-lite"
     source = {"title": meta["title"][:100], "description": meta["description"]}
     try:
         with genai.Client(api_key=key, vertexai=False, http_options=types.HttpOptions(

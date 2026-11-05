@@ -13,7 +13,7 @@
 5. 同一集完成六次發送後，下一次執行選取下一集。EP11、EP20 等集數也能讀取，沒有只支援前十集的限制。
 
 API 上傳時會自動指定影片原音語言 `defaultAudioLanguage` 為 `en-US`（英文／美國）。
-上傳前會用現有 `GEMINI_API_KEY` 呼叫一次 `gemini-2.5-flash-lite`，把標題與說明翻成
+上傳前會用現有 `GEMINI_API_KEY` 呼叫一次 `gemini-3.5-flash-lite`，把標題與說明翻成
 中文（台灣）繁體中文，透過 `localizations.zh-TW` 與英文原稿一併上傳。
 可用 repository Actions variable `GEMINI_TRANSLATION_MODEL` 指定其他相容文字模型。
 API 要求 `defaultLanguage: en` 標記標題／說明的英文原文；這不限制觀看地區。
@@ -89,7 +89,7 @@ D 欄表頭可使用「劇本類型」「劇本類型與氛圍」「故事類型
 | `YT_REFRESH_TOKEN` | 目標頻道的 OAuth refresh token | 已傳入上傳步驟 |
 | `HF_TOKEN` | 選填，啟用 Hugging Face 分支 | 尚未傳入，需另加至產片步驟的 `env` |
 | `GEMINI_IMAGE_MODEL` | 選填，指定其他相容的 Gemini 圖像模型 | 尚未傳入；預設為 `gemini-2.5-flash-image` |
-| `GEMINI_TRANSLATION_MODEL` | 選填，指定中文翻譯文字模型（Variable） | 已傳入上傳步驟；預設為 `gemini-2.5-flash-lite` |
+| `GEMINI_TRANSLATION_MODEL` | 選填，指定中文翻譯文字模型（Variable） | 已傳入上傳步驟；預設為 `gemini-3.5-flash-lite` |
 
 只在 GitHub 設定頁新增 Secret 或 Variable，不會自動把它傳入程式；選填設定也需在工作流程的 `env` 明確引用。`GEMINI_IMAGE_MODEL` 是模型名稱，不是密鑰。
 

@@ -22,7 +22,7 @@ jobs:
       - name: One short translation request (no YouTube or Sheet credentials)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_TRANSLATION_MODEL: ${{ vars.GEMINI_TRANSLATION_MODEL || 'gemini-2.5-flash-lite' }}
+          GEMINI_TRANSLATION_MODEL: ${{ vars.GEMINI_TRANSLATION_MODEL || 'gemini-3.5-flash-lite' }}
         run: |
           python - <<'PY'
           import json
@@ -32,7 +32,9 @@ jobs:
               translated, usage = translate_zh_tw({
                   'title': 'A kitten meets a gentle dog',
                   'description': 'A story about friendship. EP01 #shorts'})
-              print('::notice title=Translation check::Success')
+              result = ('Success | model=' + usage['model'] + ' | title=' + translated['title'])
+              result = result.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print('::notice title=Translation check::' + result)
               Path('translation-check.json').write_text(json.dumps(
                   {'translation': translated, 'usage': usage}, ensure_ascii=False, indent=2))
           except RuntimeError as exc:

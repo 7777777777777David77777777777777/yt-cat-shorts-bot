@@ -39,7 +39,7 @@ class LocalizationTests(unittest.TestCase):
         self.assertEqual(translated, ZH_TW)
         self.assertEqual(usage["total_token_count"], 155)
         self.assertEqual(len(captured), 1)
-        self.assertTrue(captured[0].url.path.endswith("gemini-2.5-flash-lite:generateContent"))
+        self.assertTrue(captured[0].url.path.endswith("gemini-3.5-flash-lite:generateContent"))
         body = json.loads(captured[0].content)
         self.assertEqual(json.loads(body["contents"][0]["parts"][0]["text"]), meta)
         self.assertEqual(body["generationConfig"]["responseMimeType"], "application/json")
