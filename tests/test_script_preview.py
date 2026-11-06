@@ -48,7 +48,7 @@ class ScriptReaderTests(unittest.TestCase):
 
     def test_fashion_template_uses_one_adult_and_realistic_style(self):
         story = preview.load_script("stories/EP01.md")
-        self.assertEqual(story["title"], "服裝試穿")
+        self.assertEqual(story["title"], "服裝試穿｜辦公秘書風格")
         self.assertEqual(len(story["characters"]), 1)
         self.assertIn("28-year-old adult woman", story["characters"][0])
         self.assertEqual(story["visual_style_id"], "photorealistic")
@@ -57,9 +57,10 @@ class ScriptReaderTests(unittest.TestCase):
             self.assertNotIn("Mia", scene["full_image_prompt"])
             self.assertNotIn("6-year-old", scene["full_image_prompt"])
             self.assertIn("Ava", scene["full_image_prompt"])
-        self.assertIn("knit top", story["scenes"][1]["narration"])
-        self.assertIn("trousers", story["scenes"][2]["narration"])
-        self.assertIn("socks", story["scenes"][3]["narration"])
+        self.assertIn("blouse", story["scenes"][1]["narration"])
+        self.assertIn("pencil skirt", story["scenes"][2]["narration"])
+        self.assertIn("black tights", story["scenes"][3]["narration"])
+        self.assertIn("pumps", story["scenes"][3]["narration"])
 
     def test_one_two_or_three_characters_are_supported(self):
         for count in (1, 2, 3):
