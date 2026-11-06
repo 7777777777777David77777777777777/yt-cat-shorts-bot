@@ -41,6 +41,27 @@ class ScriptReaderTests(unittest.TestCase):
         self.assertNotIn("sent_count", story)
         self.assertNotIn("row_index", story)
 
+    def test_fashion_template_uses_one_adult_and_realistic_style(self):
+        story = preview.load_script("stories/EP01.md")
+        self.assertEqual(story["title"], "服裝試穿")
+        self.assertEqual(len(story["characters"]), 1)
+        self.assertIn("28-year-old adult woman", story["characters"][0])
+        self.assertEqual(story["visual_style_id"], "photorealistic")
+        self.assertEqual(len(story["scenes"]), 4)
+        for scene in story["scenes"]:
+            self.assertNotIn("Mia", scene["full_image_prompt"])
+            self.assertNotIn("6-year-old", scene["full_image_prompt"])
+            self.assertIn("Ava", scene["full_image_prompt"])
+        self.assertIn("knit top", story["scenes"][1]["narration"])
+        self.assertIn("trousers", story["scenes"][2]["narration"])
+        self.assertIn("socks", story["scenes"][3]["narration"])
+
+    def test_one_two_or_three_characters_are_supported(self):
+        for count in (1, 2, 3):
+            source = self.fixture()
+            source["characters"] = [f"Adult character {i}" for i in range(count)]
+            self.assertEqual(len(preview.validate_script(source)["characters"]), count)
+
     def test_style_changes_do_not_change_handwritten_story(self):
         original = preview.load_script("stories/EP01.md")
         for style in preview.STYLES:

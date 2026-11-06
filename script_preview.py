@@ -86,8 +86,8 @@ def validate_script(data):
     if not re.fullmatch(r"EP\d+", data["id"], re.IGNORECASE):
         raise ValueError("集數 ID 請使用 EP 加數字，例如 EP01")
     characters = data.get("characters")
-    if not isinstance(characters, list) or len(characters) != 3:
-        raise ValueError("目前測試格式需剛好三位角色")
+    if not isinstance(characters, list) or not 1 <= len(characters) <= 3:
+        raise ValueError("目前測試格式支援一至三位角色")
     if any(not isinstance(c, str) or not c.strip() for c in characters):
         raise ValueError("每位角色設定都必須是非空白文字")
     scenes = data.get("scenes")
@@ -106,7 +106,7 @@ def validate_script(data):
     return data
 
 
-def load_script(script_path, style="cinematic_3d"):
+def load_script(script_path, style="photorealistic"):
     path = (ROOT / script_path).resolve()
     if not path.is_relative_to(STORIES.resolve()) or path.suffix.lower() not in (".md", ".json"):
         raise ValueError("劇本必須是 stories/ 資料夾內的 .md 或 .json 檔案")
@@ -181,13 +181,13 @@ def render_script(story, output, client, image_model):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--script", default="stories/EP01.md")
-    parser.add_argument("--style", choices=STYLES, default="cinematic_3d")
+    parser.add_argument("--style", choices=STYLES, default="photorealistic")
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args()
     try:
         story = load_script(args.script, args.style)
         print("劇本來源：" + json.dumps(story["source_path"], ensure_ascii=False), flush=True)
-        print(f"劇本驗證成功：{story['id']}，3 角色／4 幕，畫風 {story['visual_style_name']}", flush=True)
+        print(f"劇本驗證成功：{story['id']}，{len(story['characters'])} 角色／4 幕，畫風 {story['visual_style_name']}", flush=True)
         if args.validate_only:
             return 0
         from google import genai

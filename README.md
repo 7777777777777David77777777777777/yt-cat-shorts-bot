@@ -23,7 +23,8 @@
 ## develop：手寫劇本讀檔測試（不用 Sheet）
 
 你可以直接寫 [Markdown 範本](stories/EP01.md)，或使用同內容的 [JSON 範本](stories/EP01.json)。
-兩份檔案彼此獨立；程式只讀取執行時指定的一份，不會自動同步。範本沿用原 EP01，供你替換成自己的故事。
+兩份檔案彼此獨立；程式只讀取執行時指定的一份，不會自動同步。
+目前 EP01 範本是「服裝試穿」：一位成年女性，四幕展示整體穿搭、上衣、褲子與襪子搭配，預設為真實風格。
 
 1. 在 GitHub 的 **develop 分支**編輯 `stories/EP01.md`，保留標題格式，修改內容後提交。
 2. Actions → 原有 **Hourly 6x Cute Cat YouTube Shorts Factory** → Run workflow → **Branch 選 develop**。
@@ -43,14 +44,14 @@
 
 - `## 標題`、`## 氛圍`：填你自己的標題與故事類型；氛圍會加入產圖提示詞。
 - `## 標籤`：用半形逗號分隔，可留空。
-- `## 角色`：每行一位，以 `- ` 開頭，目前固定三位；可自行寫全動物角色。
+- `## 角色`：每行一位，以 `- ` 開頭，支援一至三位角色；本範本只使用一位成年女性。
 - `## 第1幕` 至 `## 第4幕`：各有 `### 旁白` 與 `### 畫面`，兩者都不可空白。
 
 目前沿用英文配音 `en-US-AriaNeural`，旁白請先寫英文；不會自動翻譯或改寫你提供的故事。
 標題保留原文，不會自動加上「看到最後」等尾綴。Markdown 也接受 Title、Genre、Tags、Characters、
 Scene 1～4、Narration、Action 等對應英文標題。
 
-JSON 使用 `id`、`title`、`genre`、三個文字組成的 `characters`，以及四個場景組成的 `scenes`；
+JSON 使用 `id`、`title`、`genre`、一至三個文字組成的 `characters`，以及四個場景組成的 `scenes`；
 每個場景包含 `narration` 與 `action`。`tags` 為可選文字陣列，另可提供文字 `description`。
 缺少角色、場景或台詞時，會在產圖前停止並顯示錯誤。
 

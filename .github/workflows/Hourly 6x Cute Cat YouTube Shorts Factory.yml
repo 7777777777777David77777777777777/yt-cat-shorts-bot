@@ -13,13 +13,13 @@ on:
         description: 'Visual style for all four scenes'
         type: choice
         options:
+          - photorealistic
           - cinematic_3d
           - cel_anime
           - watercolor
           - clay_stop_motion
           - paper_diorama
-          - photorealistic
-        default: cinematic_3d
+        default: photorealistic
 
 permissions:
   contents: read
@@ -57,7 +57,7 @@ jobs:
       - name: Validate script before image generation
         env:
           SCRIPT_PATH: ${{ inputs.script_path || 'stories/EP01.md' }}
-          VISUAL_STYLE: ${{ inputs.visual_style || 'cinematic_3d' }}
+          VISUAL_STYLE: ${{ inputs.visual_style || 'photorealistic' }}
         run: python script_preview.py --script "$SCRIPT_PATH" --style "$VISUAL_STYLE" --validate-only
 
       - name: Render handwritten script (no Sheet or YouTube upload)
@@ -65,7 +65,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image' }}
           SCRIPT_PATH: ${{ inputs.script_path || 'stories/EP01.md' }}
-          VISUAL_STYLE: ${{ inputs.visual_style || 'cinematic_3d' }}
+          VISUAL_STYLE: ${{ inputs.visual_style || 'photorealistic' }}
         run: python script_preview.py --script "$SCRIPT_PATH" --style "$VISUAL_STYLE"
 
       - name: Downloadable MP4 and diagnostics
