@@ -67,7 +67,7 @@ class ScriptReaderTests(unittest.TestCase):
         self.assertIn("portrait", story["scenes"][1]["scene_action"])
         self.assertIn("pencil skirt", story["scenes"][2]["scene_action"])
         self.assertIn("black tights", story["scenes"][3]["scene_action"])
-        self.assertIn("pumps", story["scenes"][3]["scene_action"])
+        self.assertIn("hosiery fabric", story["scenes"][3]["scene_action"])
 
     def test_one_two_or_three_characters_are_supported(self):
         for count in (1, 2, 3):

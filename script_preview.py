@@ -21,20 +21,25 @@ STORIES = ROOT / "stories"
 STYLES = {style["id"]: style for style in factory.VISUAL_STYLE_ROTATION}
 REFERENCE_INSTRUCTIONS = (
     "Episode wardrobe reference: The LAST attached image is scene 1 and defines the exact wardrobe. "
-    "Use the same visible person's "
-    "face and hairstyle and the exact same garments, not merely similar colors or garment categories. "
+    "Use the exact same garments, not merely similar colors or garment categories. "
+    "When identity references are present, their portrait is authoritative for facial identity; "
+    "do not replace its face with a different interpretation from scene 1. "
     "Preserve fabric texture and any existing pattern, neckline or collar, buttons, cuffs, "
     "garment fit and tuck; the bottom garment's waistband, fastenings, pockets, seams, silhouette "
     "and hemline; hosiery type, length, color and opacity; and shoe shape, closures, soles "
     "and heel height. Match only details actually visible in the reference. "
     "Do not invent garments, fabric patterns, closures, hosiery types or substitute footwear. "
     "Change pose, expression, view, framing, location and scene lighting as specified by the scene. "
+    "The reference image's camera distance, pose and full-body composition are not binding. "
     "Show only the body parts needed by the shot; a close-up need not include the entire model."
 )
 IDENTITY_INSTRUCTIONS = (
     "Character identity references: The FIRST attached images are the character's portrait and/or "
-    "full-body identity reference, in the listed order. Preserve facial structure, eyes, hairstyle "
-    "and natural adult body proportions. Their reference clothes, white socks, studio background "
+    "full-body identity reference, in the listed order. The first portrait defines facial structure, "
+    "eye shape, nose, lips, jaw width, hairline and hairstyle. The second identity image, when present, "
+    "defines natural adult body proportions. Do not average the two faces or substitute another model. "
+    "Preserve the compact natural build without slimming the body, lengthening the legs or narrowing the jaw. "
+    "Their reference clothes, white socks, studio background "
     "and neutral expression are not this episode's wardrobe or location. Use the episode wardrobe "
     "and scene description instead. Facial expression, gaze and posture follow each scene; "
     "preserve identity without freezing the reference expression."
@@ -179,7 +184,11 @@ def load_script(script_path, style="photorealistic"):
                    "Follow the requested pose and framing; preserve the character and wardrobe. "
                    "Natural anatomy and hands, clear clothing details and facial detail where visible, generous framing for a gentle zoom. "
                    "No lettering, captions, logos, watermark, border, inset or collage. "
-                   "Use the whole composition naturally; do not reserve an empty subtitle strip.")}
+                   "Use the whole composition naturally; do not reserve an empty subtitle strip. "
+                   "SHOT PRIORITY: Follow this scene's requested camera crop and subject placement, "
+                   "independently of the attached images' compositions. For a garment-detail shot, "
+                   "show only the specified garment region; keep the head, upper body and other "
+                   "out-of-frame parts excluded. Do not expand a detail shot into a full-body portrait.")}
               for s in data["scenes"]]
     return {"id": data["id"], "title": data["title"], "story_genre": data["genre"],
             "description": data.get("description", ""), "tags": data.get("tags", []),
@@ -237,19 +246,21 @@ def render_script(story, output, client, image_model, scene_seconds=5, bgm_sourc
             image = scenes_dir / f"scene_{number}.png"
             record = factory.start_image_request(records, "google", image_model, number)
             reference = scenes_dir / "scene_1.png" if number > 1 else None
-            prompt = scene["full_image_prompt"]
+            reference_context = []
             references = identities + ([reference] if reference is not None else [])
             if identities:
-                prompt += "\n" + IDENTITY_INSTRUCTIONS + "\nIdentity image order: " + ", ".join(
-                    f"{i}: {path.name}" for i, path in enumerate(identity_paths, 1))
+                reference_context.append(IDENTITY_INSTRUCTIONS + "\nIdentity image order: " + ", ".join(
+                    f"{i}: {path.name}" for i, path in enumerate(identity_paths, 1)))
             if reference is not None:
-                prompt += "\n" + REFERENCE_INSTRUCTIONS
+                reference_context.append(REFERENCE_INSTRUCTIONS)
                 record["reference_sha256"] = hashlib.sha256(reference.read_bytes()).hexdigest()
             record["reference_image"] = str(reference.relative_to(output)) if reference is not None else None
             record["reference_images"] = [{"path": str(path.relative_to(output)),
                                             "role": "episode_wardrobe" if path == reference else "character_identity",
                                             "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
                                            for path in references]
+            # Put the current shot last so reference instructions do not override its crop or expression.
+            prompt = "\n\n".join(reference_context + [scene["full_image_prompt"]])
             prompt_path = scenes_dir / f"scene_{number}.prompt.txt"
             prompt_path.write_text(prompt, encoding="utf-8")
             record["prompt_file"] = str(prompt_path.relative_to(output))
