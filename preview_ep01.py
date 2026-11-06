@@ -172,7 +172,7 @@ def video_prompt(story, index):
     )
 
 
-def make_keyframe(client, model, prompt, path, record):
+def make_keyframe(client, model, prompt, path, record, image_size=(720, 1280)):
     result = client.models.generate_content(
         model=model, contents=prompt,
         config=types.GenerateContentConfig(
@@ -191,7 +191,7 @@ def make_keyframe(client, model, prompt, path, record):
     source.write_bytes(images[0].data)
     with Image.open(source) as image:
         # Crop to cover the canvas without stretching the source image.
-        ImageOps.fit(image.convert("RGB"), (720, 1280),
+        ImageOps.fit(image.convert("RGB"), image_size,
                      method=Image.Resampling.LANCZOS).save(path)
     record["image_used"] = True
 

@@ -20,56 +20,61 @@
 額度不足就停止，不自動切換付費服務。確認可行後再擴至四幕，先下載 MP4 人工檢查，再評估是否接入正式產線。
 現階段優先觀察開場留人、平均觀看時間、完播與訂閱轉換，用數據選擇值得繼續製作的題材。
 
-## develop：EP01 圖生影片測試
+## develop：手寫劇本讀檔測試（不用 Sheet）
 
-**查詢目前金鑰的模型清單**：Actions → 原有 workflow → Run workflow → Branch 選 `develop`，
-`task` 選 `list_models`（預設）。執行完成後，在該次執行頁面的 Summary 查看模型表格，
-或展開 **List models only** 步驟查看日誌；Artifacts 的 `list_models-…` 包含 `models.json` 與 `models.md`。
-模型 ID 也會分組顯示在執行頁面的 Annotations notice；不包含金鑰或帳戶計費資料。
-只查詢 Gemini Developer API v1beta 的模型名稱、顯示名稱與支援方法，讀完所有分頁；
-不會產圖、生成影片、上傳 YouTube 或回寫 Sheet，也不輸出金鑰。
-列出的模型不保證生成權限或剩餘額度；`generateContent` 本身不能判定是否支援產圖。
-推送 `develop` 的測試程式或 workflow 修改時，也會自動執行這個只讀模型查詢；
-只有手動選擇 `preview_ep01` 才會進行付費生成。
+你可以直接寫 [Markdown 範本](stories/EP01.md)，或使用同內容的 [JSON 範本](stories/EP01.json)。
+兩份檔案彼此獨立；程式只讀取執行時指定的一份，不會自動同步。範本沿用原 EP01，供你替換成自己的故事。
 
-這個分支提供只讀模型查詢與手動影片預覽。影片測試從你提供的 Excel 匯出檔擷取 EP01 劇本，存於
-`tests/fixtures/ep01.json`；不依賴線上片單的完成狀態，不會讀寫線上 Sheet。
-預覽固定採第一版 3D 電影動畫，保留 Mia 的原始年齡與四幕故事；沒有更換詞彙來隱藏年齡。
-這份快照不會自動同步你後來在 Sheet 的修改。
+1. 在 GitHub 的 **develop 分支**編輯 `stories/EP01.md`，保留標題格式，修改內容後提交。
+2. Actions → 原有 **Hourly 6x Cute Cat YouTube Shorts Factory** → Run workflow → **Branch 選 develop**。
+   左側名稱來自預設分支；`main` 是正式發布流程，執行前請確認分支。
+3. `script_path` 填 `stories/EP01.md` 或自己的 `stories/檔名.md`／`.json`；預設讀 EP01 Markdown。
+   `visual_style` 可選 3D、日系 2D、水彩、黏土、紙雕或真實風格，四幕使用同一畫風。
+4. 在該次執行頁下載 **Artifacts → script-preview-…**，解壓縮後播放 `preview.mp4`。
+   同時保存 `metadata.json`、每幕圖片與配音；失敗時仍備份已取得的素材。
 
-1. 前往 GitHub **Actions → Hourly 6x Cute Cat YouTube Shorts Factory → Run workflow**。
-   左側名稱來自預設分支，這裡沿用同一個 workflow 檔案路徑。
-2. **Branch 選 `develop`**。`main` 是正式發布流程，請核對分支後再按綠色按鈕。
-   `task` 選 **`preview_ep01`** 才會送出付費生成請求。
-   `scene_count` 選 `4` 測完整 EP01，或 `1` 僅測第一幕；未提供時為 `4`。
-3. 執行完成後，在該次執行頁面的 **Artifacts** 下載 `preview_ep01-…`。
-   成功時解壓縮後播放 `EP01_animation_preview.mp4`；也保留各幕原始影片、圖片、字幕和 metadata。
+本測試只會手動執行，推送檔案不會自動產圖或查模型。流程不讀寫 Sheet，也不執行 YouTube 上傳，
+不帶入 Sheet 或 YouTube credentials。仍使用既有圖片＋鏡頭動態＋旁白／字幕合成，圖生影片繼續暫緩。
+`main` 正式流程未因這次實驗修改。
 
-僅需既有 repository Actions secret `GEMINI_API_KEY`。使用 `gemini-2.5-flash-image` 產圖。
-**產圖前**先用同一把金鑰查詢 ListModels，遍歷完整清單，只從回應列出的、宣告支援
-`predictLongRunning` 或 `generateVideos` 的 Veo 模型選用已知 Fast/Lite 型號。
-優先順序為 Veo 3.1 Fast（正式版、preview）、3.1 Lite（正式版、preview）、3.0 Fast（正式版、preview）。
-找不到就停止，不會猜模型名稱或自動切換到一般版。可見模型、支援功能及選擇結果存入
-`metadata.json` 的 `model_discovery`。若要明確指定清單中的其他 Veo 模型，在 repository
-**Settings → Secrets and variables → Actions → Variables** 設定 `GEMINI_VIDEO_MODEL` 為完整模型 ID；
-仍會先核對清單。Veo 需要帳戶具備該模型的付費用量與存取權，清單出現模型也不保證能生成。
-404 可能涉及模型名稱、API 方法或可見權限；清單為空時需核對專案、付費用量與區域支援，不能僅憑 404 判定原因。
-[Google 官方範例](https://github.com/google-gemini/cookbook/blob/main/quickstarts/Get_started_Veo.ipynb)
-註明兒童人物限制，因此原版 EP01 **可能直接被拒絕**。測試如實保留角色設定；拒絕後停止，
-不改寫年齡、不重試其他措辭，也不以靜態圖片冒充成功的圖生影片。
+### 怎麼寫 Markdown
 
-四幕依序處理，每幕最多一次產圖及一次 8 秒影片請求。第一幕影片通過後才繼續下一幕；
-完整測試最多請求 4 張圖片與 32 秒影片，仍可能有失敗請求的費用，實際計費依供應商。
-SDK 不自動重送請求。每幕等待最長 8 分鐘，全程生成等待預算 20 分鐘。
-手動重新執行會重新產生費用；逾時時先查看 metadata 中的 operation ID，避免重複送單。
+第一行使用 `# EP01` 等集數 ID。接著依範本填寫：
 
-完成的預覽為 720×1280、24fps、H.264/AAC MP4。保留完整配音及字幕，丟棄 Veo 原生音訊；
-各幕影片會調整播放速度以配合該幕旁白長度，調整比例記錄在 metadata，沒有嘴型同步。
-字幕時間依文字分段估算。畫面以等比例裁切鋪滿，沒有拉伸；圖片內已畫出的邊框仍需人工檢查。
-失敗時 Actions 也會備份已取得的素材與錯誤資訊；沒有成功影片時不會產生假的成片。
+- `## 標題`、`## 氛圍`：填你自己的標題與故事類型；氛圍會加入產圖提示詞。
+- `## 標籤`：用半形逗號分隔，可留空。
+- `## 角色`：每行一位，以 `- ` 開頭，目前固定三位；可自行寫全動物角色。
+- `## 第1幕` 至 `## 第4幕`：各有 `### 旁白` 與 `### 畫面`，兩者都不可空白。
 
-此測試 job 沒有 YouTube 上傳步驟或 YouTube／Sheet credentials，沒有排程，也沒有 Sheet POST。
-以下章節描述 `main` 分支的正式產片流程；`main.py`、上傳程式與 Apps Script 未因本次實驗修改。
+目前沿用英文配音 `en-US-AriaNeural`，旁白請先寫英文；不會自動翻譯或改寫你提供的故事。
+標題保留原文，不會自動加上「看到最後」等尾綴。Markdown 也接受 Title、Genre、Tags、Characters、
+Scene 1～4、Narration、Action 等對應英文標題。
+
+JSON 使用 `id`、`title`、`genre`、三個文字組成的 `characters`，以及四個場景組成的 `scenes`；
+每個場景包含 `narration` 與 `action`。`tags` 為可選文字陣列，另可提供文字 `description`。
+缺少角色、場景或台詞時，會在產圖前停止並顯示錯誤。
+
+### 模型與費用
+
+只需既有 `GEMINI_API_KEY`，用於生成四張圖片；不呼叫文字模型寫劇本、不呼叫 Veo，
+也不新增翻譯請求。每幕最多送出一次 Gemini 產圖請求，失敗就停止，不產生純色備援圖。
+預設 `gemini-2.5-flash-image`；可用 repository Variable `GEMINI_IMAGE_MODEL` 更換相容圖像模型。
+文字驗證不會呼叫 API；正式執行產圖仍依 Google 專案計費。
+
+```bash
+python script_preview.py --script stories/EP01.md --validate-only
+python script_preview.py --script stories/EP01.json --style watercolor
+```
+
+影片為 1080×1920 MP4，保留配音、字幕與既有鏡頭動態。metadata 記錄來源檔名、SHA-256、畫風、
+執行結果與 API 實際回報的產圖 token；不更新發送次數或發布紀錄。
+公開儲存庫內的劇本、執行日誌與下載產物可被其他人看到；`develop` 分支不是私密空間。
+
+舊的 `preview_ep01.py` 與 EP01 快照保留作暫緩動畫計畫的資料，本次 workflow 不執行其影片生成入口。
+
+---
+
+以下為原正式產線的設定參考；目前正式行為請以 `main` 分支 README 為準。
 
 從 Google Sheet 讀取四幕劇本，產生配音與分鏡圖片，合成直式 Shorts，再上傳 YouTube 並回寫發送紀錄。
 

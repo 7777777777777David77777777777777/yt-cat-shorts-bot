@@ -1,42 +1,36 @@
-# Reuse the workflow path registered on main so Run workflow can select develop.
-# This branch deliberately contains no production upload job or scheduled trigger.
-name: Gemini Models and EP01 Preview (develop only)
-run-name: ${{ inputs.task || 'list_models' }} · ${{ github.ref_name }}
+# Same registered path as main; choose develop explicitly in Run workflow.
+name: Handwritten Script Preview (develop only)
+run-name: Script preview · ${{ inputs.script_path || 'stories/EP01.md' }} · ${{ github.ref_name }}
 
 on:
-  push:
-    branches: [develop]
-    paths:
-      - preview_ep01.py
-      - tests/test_ep01_preview.py
-      - '.github/workflows/Hourly 6x Cute Cat YouTube Shorts Factory.yml'
   workflow_dispatch:
     inputs:
-      task:
-        description: 'list_models = read-only model list; preview_ep01 = paid animation test'
+      script_path:
+        description: 'Markdown or JSON file inside stories/'
+        type: string
+        default: stories/EP01.md
+      visual_style:
+        description: 'Visual style for all four scenes'
         type: choice
         options:
-          - list_models
-          - preview_ep01
-        default: list_models
-      scene_count:
-        description: '1 = first-scene test; 4 = full EP01 (up to four paid 8-second Veo clips)'
-        type: choice
-        options:
-          - '4'
-          - '1'
-        default: '4'
+          - cinematic_3d
+          - cel_anime
+          - watercolor
+          - clay_stop_motion
+          - paper_diorama
+          - photorealistic
+        default: cinematic_3d
 
 permissions:
   contents: read
 
 concurrency:
-  group: ep01-animation-preview-develop
+  group: handwritten-script-preview-develop
   cancel-in-progress: false
 
 jobs:
-  preview-ep01:
-    if: github.ref == 'refs/heads/develop'
+  preview-script:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -44,10 +38,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install FFmpeg and fonts
-        if: github.event_name == 'workflow_dispatch' && inputs.task == 'preview_ep01'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-liberation
+          sudo apt-get install -y ffmpeg fonts-liberation fonts-noto-cjk
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -58,30 +51,28 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt 'google-genai==2.34.0'
 
-      - name: Verify model lookup and preview
-        run: python -m unittest discover -s tests -p 'test_ep01_preview.py' -v
+      - name: Test handwritten script reader
+        run: python -m unittest discover -s tests -p 'test_script_preview.py' -v
 
-      - name: List models only (no generation requests)
-        if: (inputs.task || 'list_models') == 'list_models'
+      - name: Validate script before image generation
+        env:
+          SCRIPT_PATH: ${{ inputs.script_path || 'stories/EP01.md' }}
+          VISUAL_STYLE: ${{ inputs.visual_style || 'cinematic_3d' }}
+        run: python script_preview.py --script "$SCRIPT_PATH" --style "$VISUAL_STYLE" --validate-only
+
+      - name: Render handwritten script (no Sheet or YouTube upload)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python preview_ep01.py --list-models
+          GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image' }}
+          SCRIPT_PATH: ${{ inputs.script_path || 'stories/EP01.md' }}
+          VISUAL_STYLE: ${{ inputs.visual_style || 'cinematic_3d' }}
+        run: python script_preview.py --script "$SCRIPT_PATH" --style "$VISUAL_STYLE"
 
-      - name: Check available Veo models, then generate EP01 (no YouTube or Sheet writeback)
-        if: github.event_name == 'workflow_dispatch' && inputs.task == 'preview_ep01'
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_VIDEO_MODEL: ${{ vars.GEMINI_VIDEO_MODEL }}
-          SCENE_COUNT: ${{ inputs.scene_count || '4' }}
-        run: python preview_ep01.py --scene-count "$SCENE_COUNT"
-
-      - name: Downloadable model list or MP4 and diagnostics
+      - name: Downloadable MP4 and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.task || 'list_models' }}-${{ github.run_number }}-${{ github.run_attempt }}
-          path: |
-            output/gemini-models/
-            output/ep01-preview/
+          name: script-preview-${{ github.run_number }}-${{ github.run_attempt }}
+          path: output/script-preview/
           if-no-files-found: warn
           retention-days: 7
