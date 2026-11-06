@@ -132,7 +132,7 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(parts[0]["text"], "Preserve the reference outfit")
         blob = parts[1]["inlineData"]
         self.assertEqual(blob.get("mimeType") or blob.get("mime_type"), "image/jpeg")
-        self.assertEqual(base64.b64decode(parts[1]["inlineData"]["data"]), reference_bytes)
+        self.assertEqual(base64.urlsafe_b64decode(parts[1]["inlineData"]["data"]), reference_bytes)
         self.assertEqual(record["input_tokens"], 1800)
         self.assertEqual(record["total_tokens"], 3000)
 
