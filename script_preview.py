@@ -1,4 +1,4 @@
-"""Render a handwritten Markdown/JSON story without the Sheet or YouTube."""
+"""Render a handwritten Markdown story without the Sheet or YouTube."""
 
 import argparse
 import asyncio
@@ -75,7 +75,7 @@ def parse_markdown(text):
 
 def validate_script(data):
     if not isinstance(data, dict):
-        raise ValueError("JSON 劇本必須是物件")
+        raise ValueError("劇本解析結果必須是物件")
     allowed = {"id", "title", "genre", "characters", "tags", "scenes", "description"}
     unknown = set(data) - allowed
     if unknown:
@@ -108,11 +108,11 @@ def validate_script(data):
 
 def load_script(script_path, style="photorealistic"):
     path = (ROOT / script_path).resolve()
-    if not path.is_relative_to(STORIES.resolve()) or path.suffix.lower() not in (".md", ".json"):
-        raise ValueError("劇本必須是 stories/ 資料夾內的 .md 或 .json 檔案")
+    if not path.is_relative_to(STORIES.resolve()) or path.suffix.lower() != ".md":
+        raise ValueError("劇本必須是 stories/ 資料夾內的 Markdown（.md）檔案")
     source_bytes = path.read_bytes()
     text = source_bytes.decode("utf-8-sig")
-    data = validate_script(json.loads(text) if path.suffix.lower() == ".json" else parse_markdown(text))
+    data = validate_script(parse_markdown(text))
     if style not in STYLES:
         raise ValueError("不支援的畫風")
     selected = STYLES[style]

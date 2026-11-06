@@ -19,18 +19,23 @@ import script_preview as preview
 
 class ScriptReaderTests(unittest.TestCase):
     def fixture(self):
-        return json.loads((preview.STORIES / "EP01.json").read_text())
+        return preview.parse_markdown((preview.STORIES / "EP01.md").read_text())
 
-    def test_markdown_and_json_produce_the_same_story(self):
-        md = preview.load_script("stories/EP01.md")
-        js = preview.load_script("stories/EP01.json")
-        for field in ("id", "title", "story_genre", "characters", "tags", "scenes"):
-            self.assertEqual(md[field], js[field])
-        self.assertNotEqual(md["source_sha256"], js["source_sha256"])
+    def test_markdown_parses_handwritten_fields_and_scene_order(self):
+        text = "# EP42\n## 標題\n試穿\n## 氛圍\nStudio\n## 角色\n- One adult model\n"
+        for i in range(1, 5):
+            text += f"## 第{i}幕\n### 旁白\nNarration {i}\n### 畫面\nAction {i}\n"
+        data = preview.parse_markdown(text)
+        self.assertEqual(data["id"], "EP42")
+        self.assertEqual(data["title"], "試穿")
+        self.assertEqual(data["characters"], ["One adult model"])
+        self.assertEqual(data["tags"], [])
+        self.assertEqual(data["scenes"], [{"narration": f"Narration {i}", "action": f"Action {i}"}
+                                         for i in range(1, 5)])
 
     def test_user_title_and_narration_are_not_rewritten(self):
         source = self.fixture()
-        story = preview.load_script("stories/EP01.json")
+        story = preview.load_script("stories/EP01.md")
         self.assertEqual(story["title"], source["title"])
         self.assertEqual(story["characters"], source["characters"])
         for original, scene in zip(source["scenes"], story["scenes"]):
@@ -105,7 +110,7 @@ class ScriptReaderTests(unittest.TestCase):
         self.assertEqual(preview.parse_markdown(text), self.fixture())
 
     def test_sources_outside_stories_are_rejected(self):
-        for path in ("/tmp/story.json", "stories/../requirements.txt", "../story.md"):
+        for path in ("/tmp/story.md", "stories/../requirements.txt", "../story.md", "stories/EP01.json"):
             with self.assertRaises(ValueError):
                 preview.load_script(path)
 
@@ -117,9 +122,13 @@ class ScriptReaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "stories").mkdir()
-            (root / "stories/animals.json").write_text(json.dumps(source))
+            parts = ["# EP02", "## 標題", "Animal friends", "## 氛圍", "Warm friendship", "## 角色",
+                     "\n".join("- " + c for c in source["characters"])]
+            for i, scene in enumerate(source["scenes"], 1):
+                parts.extend([f"## 第{i}幕", "### 旁白", scene["narration"], "### 畫面", scene["action"]])
+            (root / "stories/animals.md").write_text("\n\n".join(parts))
             with patch.object(preview, "ROOT", root), patch.object(preview, "STORIES", root / "stories"):
-                story = preview.load_script("stories/animals.json")
+                story = preview.load_script("stories/animals.md")
         for scene in story["scenes"]:
             self.assertNotIn("Mia", scene["full_image_prompt"])
             self.assertNotIn("girl", scene["full_image_prompt"])

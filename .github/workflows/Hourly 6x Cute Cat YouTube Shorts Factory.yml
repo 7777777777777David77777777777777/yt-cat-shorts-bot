@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       script_path:
-        description: 'Markdown or JSON file inside stories/'
+        description: 'Markdown script inside stories/ (default: stories/EP01.md)'
         type: string
         default: stories/EP01.md
       visual_style:
