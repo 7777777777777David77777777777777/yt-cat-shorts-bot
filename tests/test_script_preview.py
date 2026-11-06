@@ -43,6 +43,9 @@ class ScriptReaderTests(unittest.TestCase):
             self.assertEqual(scene["narration"], original["narration"])
             self.assertEqual(scene["scene_action"], original["action"])
             self.assertIn(source["genre"], scene["full_image_prompt"])
+            self.assertEqual(scene["expression"], original.get("expression", ""))
+            if scene["expression"]:
+                self.assertIn(scene["expression"], scene["full_image_prompt"])
         self.assertFalse(story["script_rewritten"])
         self.assertNotIn("sent_count", story)
         self.assertNotIn("row_index", story)
@@ -126,11 +129,34 @@ class ScriptReaderTests(unittest.TestCase):
     def test_english_markdown_headings_are_supported(self):
         text = (preview.STORIES / "EP01.md").read_text()
         for before, after in {"標題": "Title", "氛圍": "Genre", "標籤": "Tags", "角色": "Characters",
-                              "旁白": "Narration", "畫面": "Action"}.items():
+                              "旁白": "Narration", "畫面": "Action", "主角參考": "Character references",
+                              "表情": "Expression"}.items():
             text = text.replace(before, after)
         for i in range(1, 5):
             text = text.replace(f"第{i}幕", f"Scene {i}")
         self.assertEqual(preview.parse_markdown(text), self.fixture())
+
+    def test_character_reference_paths_are_checked_before_any_api_call(self):
+        with tempfile.TemporaryDirectory(dir=preview.ROOT / "assets/characters") as temp:
+            corrupt = Path(temp) / "corrupt.png"
+            corrupt.write_bytes(b"not an image")
+            cases = ["../outside.png", "README.md", "assets/characters/missing.png",
+                     str(corrupt.relative_to(preview.ROOT))]
+            for path in cases:
+                with self.subTest(path=path), \
+                        patch.object(preview, "make_keyframe") as image:
+                    with self.assertRaises((ValueError, FileNotFoundError, OSError)):
+                        preview.resolve_character_references([path])
+                    image.assert_not_called()
+
+    def test_invalid_reference_lists_and_expression_types_are_rejected(self):
+        for refs in ("portrait.png", [None], [""], ["a.png"] * 3):
+            with self.subTest(refs=refs), self.assertRaises(ValueError):
+                preview.validate_script(dict(self.fixture(), character_references=refs))
+        source = self.fixture()
+        source["scenes"][0]["expression"] = 123
+        with self.assertRaises(ValueError):
+            preview.validate_script(source)
 
     def test_sources_outside_stories_are_rejected(self):
         for path in ("/tmp/story.md", "stories/../requirements.txt", "../story.md", "stories/EP01.json"):
@@ -152,6 +178,7 @@ class ScriptReaderTests(unittest.TestCase):
             (root / "stories/animals.md").write_text("\n\n".join(parts))
             with patch.object(preview, "ROOT", root), patch.object(preview, "STORIES", root / "stories"):
                 story = preview.load_script("stories/animals.md")
+        self.assertEqual(story["character_reference_images"], [])
         for scene in story["scenes"]:
             self.assertNotIn("Mia", scene["full_image_prompt"])
             self.assertNotIn("girl", scene["full_image_prompt"])
@@ -208,13 +235,16 @@ class ScriptRenderTests(unittest.TestCase):
 
         references = []
 
-        def image(client, model, prompt, path, record, image_size, reference_image=None):
+        def image(client, model, prompt, path, record, image_size, reference_images=None):
             self.assertEqual(image_size, (1080, 1920))
+            self.assertEqual(len(reference_images), 2 if record["scene"] == 1 else 3)
+            self.assertIn(preview.IDENTITY_INSTRUCTIONS, prompt)
+            for reference, original in zip(reference_images[:2], story["character_reference_images"]):
+                self.assertEqual(reference.read_bytes(), (preview.ROOT / original).read_bytes())
             if record["scene"] == 1:
-                self.assertIsNone(reference_image)
                 self.assertIsNone(record["reference_image"])
             else:
-                self.assertEqual(reference_image, path.parent / "scene_1.png")
+                self.assertEqual(reference_images[-1], path.parent / "scene_1.png")
                 self.assertIn(preview.REFERENCE_INSTRUCTIONS, prompt)
                 self.assertEqual(record["reference_image"], "scenes/scene_1.png")
                 references.append(record["reference_sha256"])
@@ -238,7 +268,11 @@ class ScriptRenderTests(unittest.TestCase):
             state = json.loads((Path(temp) / "metadata.json").read_text())
             self.assertEqual(state["status"], "completed")
             self.assertEqual(state["image_usage"]["images_used"], 4)
-            self.assertEqual(state["reference_strategy"], "fixed_first_scene")
+            self.assertEqual(state["reference_strategy"], "character_identity_and_fixed_first_scene")
+            records = state["image_usage"]["requests"]
+            self.assertEqual([len(r["reference_images"]) for r in records], [2, 3, 3, 3])
+            self.assertEqual(len({r["reference_images"][0]["sha256"] for r in records}), 1)
+            self.assertEqual(len({r["reference_images"][1]["sha256"] for r in records}), 1)
             self.assertEqual(len(references), 3)
             self.assertEqual(len(set(references)), 1)
             self.assertTrue((Path(temp) / "scenes/scene_4.prompt.txt").is_file())

@@ -145,7 +145,41 @@ class PreviewTests(unittest.TestCase):
             for reference in (directory / "missing.png", invalid):
                 with self.assertRaises((FileNotFoundError, OSError)):
                     preview.make_keyframe(client, "model", "prompt", directory / "out.png", {}, reference_image=reference)
+                with self.assertRaises((FileNotFoundError, OSError)):
+                    preview.make_keyframe(client, "model", "prompt", directory / "out.png", {},
+                                          reference_images=[reference])
         client.models.generate_content.assert_not_called()
+
+    def test_all_three_reference_images_reach_sdk_in_order(self):
+        returned = io.BytesIO()
+        Image.new("RGB", (90, 160), "gray").save(returned, format="PNG")
+        sent = []
+
+        def transport(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"inlineData": {
+                "data": base64.b64encode(returned.getvalue()).decode(), "mimeType": "image/png"}}]}}]})
+
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            references = []
+            for name, color in (("portrait", "red"), ("body", "green"), ("wardrobe", "blue")):
+                path = directory / f"{name}.png"
+                Image.new("RGB", (64, 128), color).save(path)
+                references.append(path)
+            with genai.Client(api_key="test-only", vertexai=False, http_options=types.HttpOptions(
+                    httpx_client=httpx.Client(transport=httpx.MockTransport(transport)))) as client:
+                preview.make_keyframe(client, "image-model", "Identity then wardrobe", directory / "out.png", {},
+                                      reference_images=references)
+            self.assertEqual(len(sent), 1)
+            parts = sent[0]["contents"][0]["parts"]
+            self.assertEqual(parts[0]["text"], "Identity then wardrobe")
+            self.assertEqual([base64.urlsafe_b64decode(p["inlineData"]["data"]) for p in parts[1:]],
+                             [path.read_bytes() for path in references])
+            with self.assertRaises((FileNotFoundError, OSError)):
+                preview.make_keyframe(client, "image-model", "No fallback", directory / "bad.png", {},
+                                      reference_images=[references[0], directory / "missing.png"])
+            self.assertEqual(len(sent), 1)
 
     def test_filtered_first_scene_stops_before_other_images_and_preserves_diagnostics(self):
         client = Mock()

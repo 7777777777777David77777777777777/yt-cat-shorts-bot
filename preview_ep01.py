@@ -173,17 +173,23 @@ def video_prompt(story, index):
     )
 
 
-def make_keyframe(client, model, prompt, path, record, image_size=(720, 1280), reference_image=None):
+def make_keyframe(client, model, prompt, path, record, image_size=(720, 1280), reference_image=None,
+                  reference_images=None):
+    if reference_image is not None and reference_images is not None:
+        raise ValueError("Use reference_image or reference_images, not both")
+    references = list(reference_images or []) if reference_image is None else [reference_image]
     contents = prompt
-    if reference_image is not None:
-        reference = Path(reference_image)
+    if references:
+        contents = [types.Part.from_text(text=prompt)]
+    for reference in references:
+        reference = Path(reference)
         data = reference.read_bytes()
         with Image.open(io.BytesIO(data)) as image:
             mime_type = image.get_format_mimetype()
             image.verify()
         if not mime_type or not mime_type.startswith("image/"):
             raise ValueError("Reference file is not a supported image")
-        contents = [types.Part.from_text(text=prompt), types.Part.from_bytes(data=data, mime_type=mime_type)]
+        contents.append(types.Part.from_bytes(data=data, mime_type=mime_type))
     result = client.models.generate_content(
         model=model, contents=contents,
         config=types.GenerateContentConfig(

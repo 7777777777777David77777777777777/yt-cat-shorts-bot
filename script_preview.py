@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import sys
 
+from PIL import Image
+
 import main as factory
 from preview_ep01 import make_keyframe, safe_error
 from lookbook_render import make_original_bgm, render_lookbook
@@ -18,23 +20,32 @@ ROOT = Path(__file__).resolve().parent
 STORIES = ROOT / "stories"
 STYLES = {style["id"]: style for style in factory.VISUAL_STYLE_ROTATION}
 REFERENCE_INSTRUCTIONS = (
-    "Fixed visual reference: The attached image is scene 1 and defines the exact wardrobe, "
-    "character identity, studio and lighting for this sequence. Use the same visible person's "
+    "Episode wardrobe reference: The LAST attached image is scene 1 and defines the exact wardrobe. "
+    "Use the same visible person's "
     "face and hairstyle and the exact same garments, not merely similar colors or garment categories. "
     "Preserve fabric texture and any existing pattern, neckline or collar, buttons, cuffs, "
     "garment fit and tuck; the bottom garment's waistband, fastenings, pockets, seams, silhouette "
     "and hemline; hosiery type, length, color and opacity; and shoe shape, closures, soles "
     "and heel height. Match only details actually visible in the reference. "
     "Do not invent garments, fabric patterns, closures, hosiery types or substitute footwear. "
-    "Only change the pose, view and framing to follow the scene action. "
+    "Change pose, expression, view, framing, location and scene lighting as specified by the scene. "
     "Show only the body parts needed by the shot; a close-up need not include the entire model."
+)
+IDENTITY_INSTRUCTIONS = (
+    "Character identity references: The FIRST attached images are the character's portrait and/or "
+    "full-body identity reference, in the listed order. Preserve facial structure, eyes, hairstyle "
+    "and natural adult body proportions. Their reference clothes, white socks, studio background "
+    "and neutral expression are not this episode's wardrobe or location. Use the episode wardrobe "
+    "and scene description instead. Facial expression, gaze and posture follow each scene; "
+    "preserve identity without freezing the reference expression."
 )
 
 
 def parse_markdown(text):
     """Parse explicit headings, never ask a language model to interpret the story."""
     aliases = {"標題": "title", "title": "title", "氛圍": "genre", "genre": "genre",
-               "標籤": "tags", "tags": "tags", "角色": "characters", "characters": "characters"}
+               "標籤": "tags", "tags": "tags", "角色": "characters", "characters": "characters",
+               "主角參考": "character_references", "character references": "character_references"}
     fields, key, scene, episode_id = {}, None, None, None
     seen_scenes = set()
     for line_number, line in enumerate(text.splitlines(), 1):
@@ -58,8 +69,9 @@ def parse_markdown(text):
                 continue
             if level == 2 and label.lower() in aliases:
                 key, scene = aliases[label.lower()], None
-            elif level == 3 and scene is not None and label.lower() in ("旁白", "narration", "畫面", "action"):
-                field = "narration" if label.lower() in ("旁白", "narration") else "action"
+            elif level == 3 and scene is not None and label.lower() in ("旁白", "narration", "畫面", "action", "表情", "expression"):
+                field = {"旁白": "narration", "narration": "narration", "畫面": "action", "action": "action",
+                         "表情": "expression", "expression": "expression"}[label.lower()]
                 key = f"scene{scene}_{field}"
             else:
                 raise ValueError(f"第 {line_number} 行：不支援標題 {label!r}，請沿用 stories/EP01.md 格式")
@@ -79,17 +91,24 @@ def parse_markdown(text):
         if not re.match(r"^\s*[-*]\s+", line):
             raise ValueError("角色請每行一位，以 - 開頭")
         characters.append(re.sub(r"^\s*[-*]\s+", "", line).strip())
-    return {"id": episode_id, "title": value("title"), "genre": value("genre"),
+    result = {"id": episode_id, "title": value("title"), "genre": value("genre"),
             "characters": characters,
             "tags": [tag.strip() for tag in value("tags").split(",") if tag.strip()],
             "scenes": [{"narration": value(f"scene{i}_narration"), "action": value(f"scene{i}_action")}
                        for i in range(1, 5)]}
+    if "character_references" in fields:
+        result["character_references"] = [re.sub(r"^\s*[-*]\s+", "", line).strip()
+                                          for line in value("character_references").splitlines() if line.strip()]
+    for i, scene in enumerate(result["scenes"], 1):
+        if f"scene{i}_expression" in fields:
+            scene["expression"] = value(f"scene{i}_expression")
+    return result
 
 
 def validate_script(data):
     if not isinstance(data, dict):
         raise ValueError("劇本解析結果必須是物件")
-    allowed = {"id", "title", "genre", "characters", "tags", "scenes", "description"}
+    allowed = {"id", "title", "genre", "characters", "tags", "scenes", "description", "character_references"}
     unknown = set(data) - allowed
     if unknown:
         raise ValueError(f"不支援的劇本欄位：{', '.join(sorted(unknown))}")
@@ -107,17 +126,34 @@ def validate_script(data):
     if not isinstance(scenes, list) or len(scenes) != 4:
         raise ValueError("目前測試格式需剛好四幕")
     for number, scene in enumerate(scenes, 1):
-        if not isinstance(scene, dict) or "action" not in scene or set(scene) - {"narration", "action"}:
+        if not isinstance(scene, dict) or "action" not in scene or set(scene) - {"narration", "action", "expression"}:
             raise ValueError(f"第 {number} 幕需包含 action 欄位")
         if not isinstance(scene["action"], str) or not scene["action"].strip():
             raise ValueError(f"第 {number} 幕 action 不能空白")
         if not isinstance(scene.get("narration", ""), str):
             raise ValueError(f"第 {number} 幕旁白欄位必須是文字；寫真模式不會使用旁白")
+        if not isinstance(scene.get("expression", ""), str):
+            raise ValueError(f"第 {number} 幕表情欄位必須是文字")
+    refs = data.get("character_references", [])
+    if not isinstance(refs, list) or len(refs) > 2 or any(not isinstance(r, str) or not r.strip() for r in refs):
+        raise ValueError("主角參考需為最多兩個圖片路徑")
     if not isinstance(data.get("tags", []), list) or any(not isinstance(t, str) for t in data.get("tags", [])):
         raise ValueError("tags 請使用文字陣列")
     if "description" in data and not isinstance(data["description"], str):
         raise ValueError("description 必須是文字")
     return data
+
+
+def resolve_character_references(paths):
+    references = []
+    for value in paths:
+        path = (ROOT / value).resolve()
+        if not path.is_relative_to((ROOT / "assets/characters").resolve()) or path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+            raise ValueError("主角參考圖必須在 assets/characters/ 內，使用 PNG、JPG 或 WebP")
+        with Image.open(path) as image:
+            image.verify()
+        references.append(path)
+    return references
 
 
 def load_script(script_path, style="photorealistic"):
@@ -127,25 +163,28 @@ def load_script(script_path, style="photorealistic"):
     source_bytes = path.read_bytes()
     text = source_bytes.decode("utf-8-sig")
     data = validate_script(parse_markdown(text))
+    identity_paths = resolve_character_references(data.get("character_references", []))
     if style not in STYLES:
         raise ValueError("不支援的畫風")
     selected = STYLES[style]
     characters = [factory.clean_prompt_text(c) for c in data["characters"]]
     references = "\n".join(f"{i}. {c}" for i, c in enumerate(characters, 1))
-    scenes = [{"narration": s.get("narration", ""), "scene_action": s["action"],
+    scenes = [{"narration": s.get("narration", ""), "scene_action": s["action"], "expression": s.get("expression", ""),
                "full_image_prompt": (
                    f"Scene action: {factory.clean_prompt_text(s['action'])}\n"
+                   f"Expression and gaze: {s.get('expression', '') or 'Follow the scene naturally; if the face is outside the frame, do not add a face.'}\n"
                    f"Editorial mood: {data['genre']}\nVisual style: {selected['prompt']}\n"
                    f"Character references:\n{references}\n"
                    "One cohesive full-bleed vertical 9:16 fashion photograph, background extending to all four edges. "
                    "Follow the requested pose and framing; preserve the character and wardrobe. "
-                   "Natural anatomy and hands, clear face and clothing details, generous framing for a gentle zoom. "
+                   "Natural anatomy and hands, clear clothing details and facial detail where visible, generous framing for a gentle zoom. "
                    "No lettering, captions, logos, watermark, border, inset or collage. "
                    "Use the whole composition naturally; do not reserve an empty subtitle strip.")}
               for s in data["scenes"]]
     return {"id": data["id"], "title": data["title"], "story_genre": data["genre"],
             "description": data.get("description", ""), "tags": data.get("tags", []),
             "characters": data["characters"], "scenes": scenes,
+            "character_reference_images": [str(path.relative_to(ROOT)) for path in identity_paths],
             "visual_style_id": style, "visual_style_name": selected["name"],
             "source_path": str(path.relative_to(ROOT)), "narration_enabled": False, "subtitles_enabled": False,
             "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
@@ -169,15 +208,22 @@ def resolve_bgm(bgm_path):
 def render_script(story, output, client, image_model, scene_seconds=5, bgm_source=None):
     if not 0 < scene_seconds <= 30:
         raise ValueError("每幕秒數需介於 0～30 秒")
+    identity_paths = resolve_character_references(story.get("character_reference_images", []))
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise ValueError("輸出資料夾已有檔案；請先保存前次結果，改用空資料夾")
     scenes_dir = output / "scenes"
     scenes_dir.mkdir()
+    identities = []
+    for i, path in enumerate(identity_paths, 1):
+        destination = output / "references" / f"identity_{i}{path.suffix}"
+        destination.parent.mkdir(exist_ok=True)
+        shutil.copyfile(path, destination)
+        identities.append(destination)
     records = []
     metadata = dict(story, status="running", image_model=image_model, video_generation_requests=0,
-                    reference_strategy="fixed_first_scene", presentation="photo_lookbook",
+                    reference_strategy="character_identity_and_fixed_first_scene" if identities else "fixed_first_scene", presentation="photo_lookbook",
                     narration_enabled=False, subtitles_enabled=False, scene_seconds=scene_seconds)
     save = lambda: (output / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -185,19 +231,29 @@ def render_script(story, output, client, image_model, scene_seconds=5, bgm_sourc
     images = []
     try:
         for number, scene in enumerate(story["scenes"], 1):
-            print(f"[{number}/4] " + ("建立全身服裝參考圖" if number == 1 else "以第 1 幕圖片作固定參考"), flush=True)
+            print(f"[{number}/4] " + ("依主角參考建立當集全身服裝圖" if identities and number == 1 else
+                                    "建立全身服裝參考圖" if number == 1 else
+                                    "以主角圖及第 1 幕圖片作固定參考" if identities else "以第 1 幕圖片作固定參考"), flush=True)
             image = scenes_dir / f"scene_{number}.png"
             record = factory.start_image_request(records, "google", image_model, number)
             reference = scenes_dir / "scene_1.png" if number > 1 else None
             prompt = scene["full_image_prompt"]
+            references = identities + ([reference] if reference is not None else [])
+            if identities:
+                prompt += "\n" + IDENTITY_INSTRUCTIONS + "\nIdentity image order: " + ", ".join(
+                    f"{i}: {path.name}" for i, path in enumerate(identity_paths, 1))
             if reference is not None:
                 prompt += "\n" + REFERENCE_INSTRUCTIONS
                 record["reference_sha256"] = hashlib.sha256(reference.read_bytes()).hexdigest()
             record["reference_image"] = str(reference.relative_to(output)) if reference is not None else None
+            record["reference_images"] = [{"path": str(path.relative_to(output)),
+                                            "role": "episode_wardrobe" if path == reference else "character_identity",
+                                            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                                           for path in references]
             prompt_path = scenes_dir / f"scene_{number}.prompt.txt"
             prompt_path.write_text(prompt, encoding="utf-8")
             record["prompt_file"] = str(prompt_path.relative_to(output))
-            make_keyframe(client, image_model, prompt, image, record, image_size=(1080, 1920), reference_image=reference)
+            make_keyframe(client, image_model, prompt, image, record, image_size=(1080, 1920), reference_images=references)
             images.append(str(image))
         final = output / "preview.mp4"
         duration = len(images) * max(1, round(scene_seconds * 30)) / 30
