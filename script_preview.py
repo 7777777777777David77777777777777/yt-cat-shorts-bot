@@ -1,17 +1,18 @@
 """Render a handwritten Markdown story without the Sheet or YouTube."""
 
 import argparse
-import asyncio
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
 import main as factory
 from preview_ep01 import make_keyframe, safe_error
+from lookbook_render import make_original_bgm, render_lookbook
 
 ROOT = Path(__file__).resolve().parent
 STORIES = ROOT / "stories"
@@ -106,11 +107,12 @@ def validate_script(data):
     if not isinstance(scenes, list) or len(scenes) != 4:
         raise ValueError("目前測試格式需剛好四幕")
     for number, scene in enumerate(scenes, 1):
-        if not isinstance(scene, dict) or set(scene) != {"narration", "action"}:
-            raise ValueError(f"第 {number} 幕需包含 narration 與 action 兩個欄位")
-        for field in ("narration", "action"):
-            if not isinstance(scene[field], str) or not scene[field].strip():
-                raise ValueError(f"第 {number} 幕 {field} 不能空白")
+        if not isinstance(scene, dict) or "action" not in scene or set(scene) - {"narration", "action"}:
+            raise ValueError(f"第 {number} 幕需包含 action 欄位")
+        if not isinstance(scene["action"], str) or not scene["action"].strip():
+            raise ValueError(f"第 {number} 幕 action 不能空白")
+        if not isinstance(scene.get("narration", ""), str):
+            raise ValueError(f"第 {number} 幕旁白欄位必須是文字；寫真模式不會使用旁白")
     if not isinstance(data.get("tags", []), list) or any(not isinstance(t, str) for t in data.get("tags", [])):
         raise ValueError("tags 請使用文字陣列")
     if "description" in data and not isinstance(data["description"], str):
@@ -129,22 +131,44 @@ def load_script(script_path, style="photorealistic"):
         raise ValueError("不支援的畫風")
     selected = STYLES[style]
     characters = [factory.clean_prompt_text(c) for c in data["characters"]]
-    cameras = ["smooth_push_in", "smooth_pan_right", "smooth_pull_out", "smooth_push_in"]
-    scenes = [{"narration": s["narration"], "scene_action": s["action"], "camera_style": cameras[i],
-               "full_image_prompt": f"Story genre and mood: {data['genre']}\n" + factory.build_image_prompt(
-                   selected["prompt"], characters, factory.clean_prompt_text(s["action"]))}
-              for i, s in enumerate(data["scenes"])]
+    references = "\n".join(f"{i}. {c}" for i, c in enumerate(characters, 1))
+    scenes = [{"narration": s.get("narration", ""), "scene_action": s["action"],
+               "full_image_prompt": (
+                   f"Scene action: {factory.clean_prompt_text(s['action'])}\n"
+                   f"Editorial mood: {data['genre']}\nVisual style: {selected['prompt']}\n"
+                   f"Character references:\n{references}\n"
+                   "One cohesive full-bleed vertical 9:16 fashion photograph, background extending to all four edges. "
+                   "Follow the requested pose and framing; preserve the character and wardrobe. "
+                   "Natural anatomy and hands, clear face and clothing details, generous framing for a gentle zoom. "
+                   "No lettering, captions, logos, watermark, border, inset or collage. "
+                   "Use the whole composition naturally; do not reserve an empty subtitle strip.")}
+              for s in data["scenes"]]
     return {"id": data["id"], "title": data["title"], "story_genre": data["genre"],
             "description": data.get("description", ""), "tags": data.get("tags", []),
             "characters": data["characters"], "scenes": scenes,
             "visual_style_id": style, "visual_style_name": selected["name"],
-            "voice_name": "en-US-AriaNeural", "source_path": str(path.relative_to(ROOT)),
+            "source_path": str(path.relative_to(ROOT)), "narration_enabled": False, "subtitles_enabled": False,
             "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
             "preview_only": True, "sheet_read": False, "sheet_writeback": False,
             "youtube_upload": False, "script_rewritten": False}
 
 
-def render_script(story, output, client, image_model):
+def resolve_bgm(bgm_path):
+    if not bgm_path:
+        return None
+    path = (ROOT / bgm_path).resolve()
+    if not path.is_relative_to((ROOT / "assets/bgm").resolve()) or path.suffix.lower() not in (".wav", ".mp3", ".m4a"):
+        raise ValueError("自訂 BGM 請放在 assets/bgm/，使用 WAV、MP3 或 M4A")
+    result = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(path)],
+                            capture_output=True, text=True, check=True)
+    if not any(s["codec_type"] == "audio" for s in json.loads(result.stdout)["streams"]):
+        raise ValueError("BGM 檔案沒有音訊軌")
+    return path
+
+
+def render_script(story, output, client, image_model, scene_seconds=5, bgm_source=None):
+    if not 0 < scene_seconds <= 30:
+        raise ValueError("每幕秒數需介於 0～30 秒")
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
@@ -153,15 +177,16 @@ def render_script(story, output, client, image_model):
     scenes_dir.mkdir()
     records = []
     metadata = dict(story, status="running", image_model=image_model, video_generation_requests=0,
-                    reference_strategy="fixed_first_scene")
+                    reference_strategy="fixed_first_scene", presentation="photo_lookbook",
+                    narration_enabled=False, subtitles_enabled=False, scene_seconds=scene_seconds)
     save = lambda: (output / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     save()
-    images, audios = [], []
+    images = []
     try:
         for number, scene in enumerate(story["scenes"], 1):
             print(f"[{number}/4] " + ("建立全身服裝參考圖" if number == 1 else "以第 1 幕圖片作固定參考"), flush=True)
-            image, audio = scenes_dir / f"scene_{number}.png", scenes_dir / f"scene_{number}.mp3"
+            image = scenes_dir / f"scene_{number}.png"
             record = factory.start_image_request(records, "google", image_model, number)
             reference = scenes_dir / "scene_1.png" if number > 1 else None
             prompt = scene["full_image_prompt"]
@@ -173,24 +198,26 @@ def render_script(story, output, client, image_model):
             prompt_path.write_text(prompt, encoding="utf-8")
             record["prompt_file"] = str(prompt_path.relative_to(output))
             make_keyframe(client, image_model, prompt, image, record, image_size=(1080, 1920), reference_image=reference)
-            asyncio.run(factory.generate_speech_audio(scene["narration"], str(audio), story["voice_name"]))
             images.append(str(image))
-            audios.append(str(audio))
         final = output / "preview.mp4"
-        old_scene_dir = factory.SCENE_DIR
-        try:
-            factory.SCENE_DIR = str(scenes_dir)
-            factory.render_continuous_smooth_short(images, audios, story["scenes"], str(final))
-        finally:
-            factory.SCENE_DIR = old_scene_dir
+        duration = len(images) * max(1, round(scene_seconds * 30)) / 30
+        bgm = output / ("bgm" + bgm_source.suffix if bgm_source is not None else "bgm.wav")
+        if bgm_source is None:
+            make_original_bgm(bgm, duration)
+            metadata["bgm_source"] = "generated_instrumental_96bpm_v1"
+        else:
+            shutil.copyfile(bgm_source, bgm)
+            metadata["bgm_source"] = str(bgm_source.relative_to(ROOT))
+        metadata["bgm_sha256"] = hashlib.sha256(bgm.read_bytes()).hexdigest()
+        render_lookbook(images, bgm, final, scene_seconds=scene_seconds)
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(final)],
                                capture_output=True, text=True, check=True)
         streams = json.loads(probe.stdout)["streams"]
         if not any(s["codec_type"] == "video" and s.get("width") == 1080 and s.get("height") == 1920 for s in streams):
             raise RuntimeError("成片未包含 1080×1920 影片軌")
         if not any(s["codec_type"] == "audio" for s in streams):
-            raise RuntimeError("成片缺少配音")
-        metadata.update(status="completed", final_mp4=final.name)
+            raise RuntimeError("成片缺少 BGM")
+        metadata.update(status="completed", final_mp4=final.name, duration_seconds=duration)
         return final
     except Exception as exc:
         metadata.update(status="failed", error=safe_error(exc))
@@ -205,9 +232,14 @@ def main():
     parser.add_argument("--script", default="stories/EP01.md")
     parser.add_argument("--style", choices=STYLES, default="photorealistic")
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--scene-seconds", type=float, default=5)
+    parser.add_argument("--bgm", default="", help="Optional licensed music file under assets/bgm/")
     args = parser.parse_args()
     try:
         story = load_script(args.script, args.style)
+        if not 0 < args.scene_seconds <= 30:
+            raise ValueError("每幕秒數需介於 0～30 秒")
+        bgm_source = resolve_bgm(args.bgm)
         print("劇本來源：" + json.dumps(story["source_path"], ensure_ascii=False), flush=True)
         print(f"劇本驗證成功：{story['id']}，{len(story['characters'])} 角色／4 幕，畫風 {story['visual_style_name']}", flush=True)
         if args.validate_only:
@@ -220,7 +252,8 @@ def main():
         with genai.Client(api_key=key, vertexai=False, http_options=types.HttpOptions(
                 timeout=60000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
             model = os.environ.get("GEMINI_IMAGE_MODEL", "").strip() or "gemini-2.5-flash-image"
-            final = render_script(story, ROOT / "output/script-preview", client, model)
+            final = render_script(story, ROOT / "output/script-preview", client, model,
+                                  scene_seconds=args.scene_seconds, bgm_source=bgm_source)
         print(f"完成，請下載 MP4：{final}")
         return 0
     except Exception as exc:

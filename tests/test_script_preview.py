@@ -1,4 +1,4 @@
-import asyncio
+from array import array
 import contextlib
 import copy
 import io
@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import wave
 from unittest.mock import AsyncMock, Mock, patch
 
 from PIL import Image
@@ -48,7 +49,7 @@ class ScriptReaderTests(unittest.TestCase):
 
     def test_fashion_template_uses_one_adult_and_realistic_style(self):
         story = preview.load_script("stories/EP01.md")
-        self.assertEqual(story["title"], "服裝試穿｜辦公秘書風格")
+        self.assertEqual(story["title"], "辦公秘書寫真｜黑絲襪與高跟鞋")
         self.assertEqual(len(story["characters"]), 1)
         self.assertIn("28-year-old adult woman", story["characters"][0])
         self.assertEqual(story["visual_style_id"], "photorealistic")
@@ -57,10 +58,13 @@ class ScriptReaderTests(unittest.TestCase):
             self.assertNotIn("Mia", scene["full_image_prompt"])
             self.assertNotIn("6-year-old", scene["full_image_prompt"])
             self.assertIn("Ava", scene["full_image_prompt"])
-        self.assertIn("blouse", story["scenes"][1]["narration"])
-        self.assertIn("pencil skirt", story["scenes"][2]["narration"])
-        self.assertIn("black tights", story["scenes"][3]["narration"])
-        self.assertIn("pumps", story["scenes"][3]["narration"])
+        self.assertTrue(all(not scene["narration"] for scene in story["scenes"]))
+        self.assertFalse(story["narration_enabled"])
+        self.assertFalse(story["subtitles_enabled"])
+        self.assertIn("portrait", story["scenes"][1]["scene_action"])
+        self.assertIn("pencil skirt", story["scenes"][2]["scene_action"])
+        self.assertIn("black tights", story["scenes"][3]["scene_action"])
+        self.assertIn("pumps", story["scenes"][3]["scene_action"])
 
     def test_one_two_or_three_characters_are_supported(self):
         for count in (1, 2, 3):
@@ -93,10 +97,28 @@ class ScriptReaderTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     preview.validate_script(source)
 
+    def test_narration_is_optional_but_each_photo_needs_an_action(self):
+        source = self.fixture()
+        for scene in source["scenes"]:
+            scene.pop("narration")
+        preview.validate_script(source)
+        source["scenes"][0]["action"] = ""
+        with self.assertRaises(ValueError):
+            preview.validate_script(source)
+
+    def test_invalid_bgm_is_rejected_before_images(self):
+        for bgm in ("../outside.wav", "README.md", "assets/bgm/missing.mp3"):
+            with self.subTest(bgm=bgm), \
+                    patch.object(sys, "argv", ["script_preview.py", "--bgm", bgm]), \
+                    patch.object(preview, "make_keyframe") as image, \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(preview.main(), 1)
+                image.assert_not_called()
+
     def test_markdown_typo_or_duplicate_section_is_rejected(self):
         text = (preview.STORIES / "EP01.md").read_text()
         for changed in (text.replace("## 氛圍", "## 畫風拼錯"),
-                        text.replace("### 畫面", "### 旁白", 1),
+                        text.replace("### 畫面", "### 畫面\n\nDuplicate\n\n### 畫面", 1),
                         text.replace("## 第2幕", "## 第1幕")):
             with self.assertRaises(ValueError):
                 preview.parse_markdown(changed)
@@ -150,7 +172,7 @@ class ScriptReaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, \
                 patch.object(preview, "make_keyframe", side_effect=RuntimeError("Image unavailable")), \
                 patch.object(preview.factory, "generate_speech_audio", new_callable=AsyncMock) as speech, \
-                patch.object(preview.factory, "render_continuous_smooth_short") as render:
+                patch.object(preview, "render_lookbook") as render:
             with self.assertRaisesRegex(RuntimeError, "Image unavailable"):
                 preview.render_script(story, temp, Mock(), "test-image-model")
             state = json.loads((Path(temp) / "metadata.json").read_text())
@@ -163,6 +185,24 @@ class ScriptReaderTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
 class ScriptRenderTests(unittest.TestCase):
+    def test_generated_music_is_audible_and_custom_track_is_validated(self):
+        with tempfile.TemporaryDirectory(dir=preview.ROOT / "assets/bgm") as temp:
+            track = Path(temp) / "test.wav"
+            preview.make_original_bgm(track, 0.2)
+            with wave.open(str(track)) as audio:
+                self.assertEqual(audio.getnframes(), 4410)
+                samples = array("h", audio.readframes(audio.getnframes()))
+                self.assertGreater(max(abs(x) for x in samples), 1000)
+            self.assertEqual(preview.resolve_bgm(str(track.relative_to(preview.ROOT))), track)
+            with tempfile.TemporaryDirectory() as output:
+                image = Path(output) / "photo.png"
+                Image.new("RGB", (90, 160), "gray").save(image)
+                final = Path(output) / "loop.mp4"
+                preview.render_lookbook([image], track, final, scene_seconds=0.8)
+                pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(final), "-ss", "0.3", "-t", "0.2",
+                                      "-vn", "-f", "s16le", "-ac", "1", "-"], capture_output=True, check=True).stdout
+                self.assertGreater(max(abs(x) for x in array("h", pcm)), 100)
+
     def test_real_renderer_outputs_mp4_without_sheet_or_youtube(self):
         story = preview.load_script("stories/EP01.md")
 
@@ -178,25 +218,23 @@ class ScriptRenderTests(unittest.TestCase):
                 self.assertIn(preview.REFERENCE_INSTRUCTIONS, prompt)
                 self.assertEqual(record["reference_image"], "scenes/scene_1.png")
                 references.append(record["reference_sha256"])
-            Image.effect_noise((180, 320), 60).convert("RGB").save(path)
+            Image.new("RGB", (180, 320), (80 + record["scene"] * 20, 100, 140)).save(path)
             record.update(image_used=True, returned_images=1, total_tokens=100)
-
-        async def speech(text, path, voice):
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
-                            "sine=frequency=440:sample_rate=44100", "-t", "2.1", path], check=True)
 
         previous_dir = preview.factory.SCENE_DIR
         client = Mock()
         with tempfile.TemporaryDirectory() as temp, \
                 patch.object(preview, "make_keyframe", side_effect=image) as generate_image, \
-                patch.object(preview.factory, "generate_speech_audio", side_effect=speech) as generate_speech, \
+                patch.object(preview.factory, "generate_speech_audio", side_effect=AssertionError) as generate_speech, \
+                patch.object(preview.factory, "render_continuous_smooth_short", side_effect=AssertionError), \
                 patch.object(preview.factory, "fetch_next_episode_from_google_sheet", side_effect=AssertionError), \
                 patch.object(preview.factory.requests, "get", side_effect=AssertionError), \
                 patch.object(preview.factory.requests, "post", side_effect=AssertionError):
-            final = preview.render_script(story, temp, client, "test-image-model")
-            info = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_format", "-of", "json", str(final)],
+            final = preview.render_script(story, temp, client, "test-image-model", scene_seconds=0.5)
+            info = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_format", "-show_streams", "-of", "json", str(final)],
                                              capture_output=True, text=True, check=True).stdout)
-            self.assertLess(abs(float(info["format"]["duration"]) - 8.4), 0.5)
+            self.assertLess(abs(float(info["format"]["duration"]) - 2.0), 0.15)
+            self.assertEqual({s["codec_type"] for s in info["streams"]}, {"video", "audio"})
             state = json.loads((Path(temp) / "metadata.json").read_text())
             self.assertEqual(state["status"], "completed")
             self.assertEqual(state["image_usage"]["images_used"], 4)
@@ -206,8 +244,19 @@ class ScriptRenderTests(unittest.TestCase):
             self.assertTrue((Path(temp) / "scenes/scene_4.prompt.txt").is_file())
             self.assertFalse(state["youtube_upload"])
             self.assertFalse(state["sheet_read"])
+            self.assertFalse(state["narration_enabled"])
+            self.assertFalse(state["subtitles_enabled"])
+            self.assertEqual(state["bgm_source"], "generated_instrumental_96bpm_v1")
+            self.assertTrue((Path(temp) / "bgm.wav").is_file())
             self.assertEqual(generate_image.call_count, 4)
-            self.assertEqual(generate_speech.call_count, 4)
+            generate_speech.assert_not_called()
+            frame_bytes = subprocess.run(["ffmpeg", "-v", "error", "-ss", "0.2", "-i", str(final),
+                                          "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
+                                         capture_output=True, check=True).stdout
+            with Image.open(io.BytesIO(frame_bytes)) as frame:
+                center = frame.getpixel((540, 900))
+                for coordinate in ((540, 1700), (100, 50)):
+                    self.assertLess(max(abs(a - b) for a, b in zip(center, frame.getpixel(coordinate))), 4)
         self.assertEqual(preview.factory.SCENE_DIR, previous_dir)
         client.models.generate_videos.assert_not_called()
 

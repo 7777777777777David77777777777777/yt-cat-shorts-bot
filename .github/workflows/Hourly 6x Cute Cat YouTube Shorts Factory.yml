@@ -20,6 +20,15 @@ on:
           - clay_stop_motion
           - paper_diorama
         default: photorealistic
+      scene_seconds:
+        description: 'Seconds per photograph (4 photos)'
+        type: choice
+        options: ['5', '4', '6']
+        default: '5'
+      bgm_path:
+        description: 'Optional licensed audio in assets/bgm/; blank = generated instrumental BGM'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -58,7 +67,9 @@ jobs:
         env:
           SCRIPT_PATH: ${{ inputs.script_path || 'stories/EP01.md' }}
           VISUAL_STYLE: ${{ inputs.visual_style || 'photorealistic' }}
-        run: python script_preview.py --script "$SCRIPT_PATH" --style "$VISUAL_STYLE" --validate-only
+          SCENE_SECONDS: ${{ inputs.scene_seconds || '5' }}
+          BGM_PATH: ${{ inputs.bgm_path || '' }}
+        run: python script_preview.py --script "$SCRIPT_PATH" --style "$VISUAL_STYLE" --scene-seconds "$SCENE_SECONDS" --bgm "$BGM_PATH" --validate-only
 
       - name: Render handwritten script (no Sheet or YouTube upload)
         env:
@@ -66,7 +77,9 @@ jobs:
           GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image' }}
           SCRIPT_PATH: ${{ inputs.script_path || 'stories/EP01.md' }}
           VISUAL_STYLE: ${{ inputs.visual_style || 'photorealistic' }}
-        run: python script_preview.py --script "$SCRIPT_PATH" --style "$VISUAL_STYLE"
+          SCENE_SECONDS: ${{ inputs.scene_seconds || '5' }}
+          BGM_PATH: ${{ inputs.bgm_path || '' }}
+        run: python script_preview.py --script "$SCRIPT_PATH" --style "$VISUAL_STYLE" --scene-seconds "$SCENE_SECONDS" --bgm "$BGM_PATH"
 
       - name: Downloadable MP4 and diagnostics
         if: always()
