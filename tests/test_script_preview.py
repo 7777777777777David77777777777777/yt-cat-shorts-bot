@@ -165,8 +165,18 @@ class ScriptRenderTests(unittest.TestCase):
     def test_real_renderer_outputs_mp4_without_sheet_or_youtube(self):
         story = preview.load_script("stories/EP01.md")
 
-        def image(client, model, prompt, path, record, image_size):
+        references = []
+
+        def image(client, model, prompt, path, record, image_size, reference_image=None):
             self.assertEqual(image_size, (1080, 1920))
+            if record["scene"] == 1:
+                self.assertIsNone(reference_image)
+                self.assertIsNone(record["reference_image"])
+            else:
+                self.assertEqual(reference_image, path.parent / "scene_1.png")
+                self.assertIn(preview.REFERENCE_INSTRUCTIONS, prompt)
+                self.assertEqual(record["reference_image"], "scenes/scene_1.png")
+                references.append(record["reference_sha256"])
             Image.effect_noise((180, 320), 60).convert("RGB").save(path)
             record.update(image_used=True, returned_images=1, total_tokens=100)
 
@@ -189,6 +199,10 @@ class ScriptRenderTests(unittest.TestCase):
             state = json.loads((Path(temp) / "metadata.json").read_text())
             self.assertEqual(state["status"], "completed")
             self.assertEqual(state["image_usage"]["images_used"], 4)
+            self.assertEqual(state["reference_strategy"], "fixed_first_scene")
+            self.assertEqual(len(references), 3)
+            self.assertEqual(len(set(references)), 1)
+            self.assertTrue((Path(temp) / "scenes/scene_4.prompt.txt").is_file())
             self.assertFalse(state["youtube_upload"])
             self.assertFalse(state["sheet_read"])
             self.assertEqual(generate_image.call_count, 4)

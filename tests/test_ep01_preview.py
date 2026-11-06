@@ -102,6 +102,51 @@ class PreviewTests(unittest.TestCase):
             self.assertFalse(path.exists())
         self.assertEqual(client.models.generate_content.call_count, 1)
 
+    def test_reference_image_bytes_are_sent_to_developer_generate_content(self):
+        returned = io.BytesIO()
+        Image.new("RGB", (100, 200), "orange").save(returned, format="PNG")
+        requests = []
+
+        def transport(request):
+            requests.append(request)
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"inlineData": {
+                "data": base64.b64encode(returned.getvalue()).decode(), "mimeType": "image/png"}}]}}],
+                "usageMetadata": {"promptTokenCount": 1800, "candidatesTokenCount": 1200, "totalTokenCount": 3000}})
+
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            reference = directory / "reference.jpg"
+            Image.new("RGB", (64, 128), "green").save(reference)
+            reference_bytes = reference.read_bytes()
+            with genai.Client(api_key="test-only", vertexai=False, http_options=types.HttpOptions(
+                    httpx_client=httpx.Client(transport=httpx.MockTransport(transport)))) as client:
+                record = {}
+                preview.make_keyframe(client, "image-model", "Preserve the reference outfit", directory / "scene.png",
+                                      record, image_size=(1080, 1920), reference_image=reference)
+            with Image.open(directory / "scene.png") as actual:
+                self.assertEqual(actual.size, (1080, 1920))
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(requests[0].url.path.endswith(":generateContent"))
+        body = json.loads(requests[0].content)
+        parts = body["contents"][0]["parts"]
+        self.assertEqual(parts[0]["text"], "Preserve the reference outfit")
+        blob = parts[1]["inlineData"]
+        self.assertEqual(blob.get("mimeType") or blob.get("mime_type"), "image/jpeg")
+        self.assertEqual(base64.b64decode(parts[1]["inlineData"]["data"]), reference_bytes)
+        self.assertEqual(record["input_tokens"], 1800)
+        self.assertEqual(record["total_tokens"], 3000)
+
+    def test_invalid_reference_never_falls_back_to_text_only_generation(self):
+        client = Mock()
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            invalid = directory / "invalid.png"
+            invalid.write_bytes(b"not an image")
+            for reference in (directory / "missing.png", invalid):
+                with self.assertRaises((FileNotFoundError, OSError)):
+                    preview.make_keyframe(client, "model", "prompt", directory / "out.png", {}, reference_image=reference)
+        client.models.generate_content.assert_not_called()
+
     def test_filtered_first_scene_stops_before_other_images_and_preserves_diagnostics(self):
         client = Mock()
         client.models.list.return_value = [types.Model(

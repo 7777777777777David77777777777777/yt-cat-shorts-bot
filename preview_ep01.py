@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -172,9 +173,19 @@ def video_prompt(story, index):
     )
 
 
-def make_keyframe(client, model, prompt, path, record, image_size=(720, 1280)):
+def make_keyframe(client, model, prompt, path, record, image_size=(720, 1280), reference_image=None):
+    contents = prompt
+    if reference_image is not None:
+        reference = Path(reference_image)
+        data = reference.read_bytes()
+        with Image.open(io.BytesIO(data)) as image:
+            mime_type = image.get_format_mimetype()
+            image.verify()
+        if not mime_type or not mime_type.startswith("image/"):
+            raise ValueError("Reference file is not a supported image")
+        contents = [types.Part.from_text(text=prompt), types.Part.from_bytes(data=data, mime_type=mime_type)]
     result = client.models.generate_content(
-        model=model, contents=prompt,
+        model=model, contents=contents,
         config=types.GenerateContentConfig(
             response_modalities=["IMAGE"],
             image_config=types.ImageConfig(aspect_ratio="9:16")),

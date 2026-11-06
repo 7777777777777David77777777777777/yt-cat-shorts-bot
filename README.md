@@ -16,6 +16,11 @@
 
 四幕維持同一位模特兒、同一套服裝與同一攝影棚。標題可用中文；目前旁白使用英文聲音 `en-US-AriaNeural`。
 
+第 1 幕先生成全身圖，第 2～4 幕每次都把**第 1 幕圖片**附在 Gemini 請求中作固定參考，
+再指定不同姿勢、角度或細節構圖。參考不會逐幕接續，以免偏差累積。
+提示詞會要求保留臉部、髮型、針織紋理、腰頭、襪長與鞋型；這能改善一致性，仍不能保證細節完全不變。
+目前不會自動判定第 1 幕服裝是否正確；人工檢查時若發現參考圖已經偏離設定，應先修改該幕再重新測試。
+
 ## 1. 修改劇本
 
 1. 開啟 [stories/EP01.md](stories/EP01.md)，確認 GitHub 分支是 **develop**。
@@ -54,7 +59,8 @@ develop 的 workflow 名稱是 **Handwritten Script Preview (develop only)**；�
 執行完成後，開啟該次紀錄，在 **Artifacts** 下載 `script-preview-…`，解壓縮並播放 **preview.mp4**。
 
 成品為 1080×1920 直式 MP4，含英文配音、字幕與鏡頭平移／縮放。
-下載檔也包含每幕圖片、配音，以及程式自動產生的 `metadata.json` 執行紀錄；紀錄不需要你編輯。
+下載檔也包含每幕圖片、配音、實際產圖提示詞，以及程式自動產生的 `metadata.json` 執行紀錄。
+紀錄內包含各幕使用的參考檔名與 SHA-256，可核對後三幕是否使用相同參考；紀錄不需要你編輯。
 失敗時仍會備份已取得的素材與錯誤資訊。
 
 目前是靜態分鏡合成預覽；真正的角色肢體動畫仍在暫緩計畫中。
@@ -64,6 +70,7 @@ develop 的 workflow 名稱是 **Handwritten Script Preview (develop only)**；�
 使用既有 repository Actions secret **GEMINI_API_KEY** 生成四張圖片。
 預設模型是 `gemini-2.5-flash-image`；如需其他相容圖像模型，可設定 Actions variable `GEMINI_IMAGE_MODEL`。
 每幕最多一次產圖請求，失敗就停止，不產生純色備援圖；產圖依 Google 專案計費。
+後三幕的請求包含圖片輸入，會增加輸入用量；實際 token 以 API 回報為準，不估算或保證價格。
 
 推送劇本不會自動產圖，只有手動執行才會呼叫產圖 API。本測試不讀寫 Sheet、不上傳 YouTube，也不帶入其 credentials。
 公開儲存庫內的劇本、日誌與下載產物可被其他人看到；develop 分支不是私密空間。

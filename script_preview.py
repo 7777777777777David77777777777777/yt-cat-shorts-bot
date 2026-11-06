@@ -16,6 +16,17 @@ from preview_ep01 import make_keyframe, safe_error
 ROOT = Path(__file__).resolve().parent
 STORIES = ROOT / "stories"
 STYLES = {style["id"]: style for style in factory.VISUAL_STYLE_ROTATION}
+REFERENCE_INSTRUCTIONS = (
+    "Fixed visual reference: The attached image is scene 1 and defines the exact wardrobe, "
+    "character identity, studio and lighting for this sequence. Use the same visible person's "
+    "face and hairstyle and the exact same garments, not merely similar colors or garment categories. "
+    "Preserve knit pattern and texture, neckline, cuffs, hem, garment fit and tuck; "
+    "trouser waistband, fastenings, belt loops, pockets, seams, leg width and length; "
+    "sock height, ribbing and color; and shoe shape, laces and soles. "
+    "Do not invent a new knit pattern, waistband design, sock length or substitute footwear. "
+    "Only change the pose, view and framing to follow the scene action. "
+    "Show only the body parts needed by the shot; a close-up need not include the entire model."
+)
 
 
 def parse_markdown(text):
@@ -140,17 +151,27 @@ def render_script(story, output, client, image_model):
     scenes_dir = output / "scenes"
     scenes_dir.mkdir()
     records = []
-    metadata = dict(story, status="running", image_model=image_model, video_generation_requests=0)
+    metadata = dict(story, status="running", image_model=image_model, video_generation_requests=0,
+                    reference_strategy="fixed_first_scene")
     save = lambda: (output / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     save()
     images, audios = [], []
     try:
         for number, scene in enumerate(story["scenes"], 1):
-            print(f"[{number}/4] 讀取手寫內容，產生分鏡與配音", flush=True)
+            print(f"[{number}/4] " + ("建立全身服裝參考圖" if number == 1 else "以第 1 幕圖片作固定參考"), flush=True)
             image, audio = scenes_dir / f"scene_{number}.png", scenes_dir / f"scene_{number}.mp3"
             record = factory.start_image_request(records, "google", image_model, number)
-            make_keyframe(client, image_model, scene["full_image_prompt"], image, record, image_size=(1080, 1920))
+            reference = scenes_dir / "scene_1.png" if number > 1 else None
+            prompt = scene["full_image_prompt"]
+            if reference is not None:
+                prompt += "\n" + REFERENCE_INSTRUCTIONS
+                record["reference_sha256"] = hashlib.sha256(reference.read_bytes()).hexdigest()
+            record["reference_image"] = str(reference.relative_to(output)) if reference is not None else None
+            prompt_path = scenes_dir / f"scene_{number}.prompt.txt"
+            prompt_path.write_text(prompt, encoding="utf-8")
+            record["prompt_file"] = str(prompt_path.relative_to(output))
+            make_keyframe(client, image_model, prompt, image, record, image_size=(1080, 1920), reference_image=reference)
             asyncio.run(factory.generate_speech_audio(scene["narration"], str(audio), story["voice_name"]))
             images.append(str(image))
             audios.append(str(audio))
