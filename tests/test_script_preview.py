@@ -20,7 +20,9 @@ import script_preview as preview
 
 class ScriptReaderTests(unittest.TestCase):
     def fixture(self):
-        return preview.parse_markdown((preview.STORIES / "EP01.md").read_text())
+        data = preview.parse_markdown((preview.STORIES / "EP01.md").read_text())
+        preview.expand_character_profile(data)
+        return data
 
     def test_markdown_parses_handwritten_fields_and_scene_order(self):
         text = "# EP42\n## 標題\n試穿\n## 氛圍\nStudio\n## 角色\n- One adult model\n"
@@ -64,10 +66,11 @@ class ScriptReaderTests(unittest.TestCase):
         self.assertTrue(all(not scene["narration"] for scene in story["scenes"]))
         self.assertFalse(story["narration_enabled"])
         self.assertFalse(story["subtitles_enabled"])
-        self.assertIn("portrait", story["scenes"][1]["scene_action"])
-        self.assertIn("pencil skirt", story["scenes"][2]["scene_action"])
-        self.assertIn("black tights", story["scenes"][3]["scene_action"])
-        self.assertIn("hosiery fabric", story["scenes"][3]["scene_action"])
+        self.assertEqual([s["shot"]["type"] for s in story["scenes"]], ["full_body", "half_body", "full_body", "detail"])
+        self.assertIn("pencil skirt", story["wardrobe"]["bottom"])
+        self.assertFalse(story["scenes"][3]["shot"]["face_visible"])
+        self.assertIn("both complete shoes", story["scenes"][3]["shot"]["coverage"])
+        self.assertNotIn("blouse", story["characters"][0])
 
     def test_one_two_or_three_characters_are_supported(self):
         for count in (1, 2, 3):
@@ -121,20 +124,86 @@ class ScriptReaderTests(unittest.TestCase):
     def test_markdown_typo_or_duplicate_section_is_rejected(self):
         text = (preview.STORIES / "EP01.md").read_text()
         for changed in (text.replace("## 氛圍", "## 畫風拼錯"),
-                        text.replace("### 畫面", "### 畫面\n\nDuplicate\n\n### 畫面", 1),
+                        text.replace("### 動作", "### 動作\n\nDuplicate\n\n### 動作", 1),
                         text.replace("## 第2幕", "## 第1幕")):
             with self.assertRaises(ValueError):
                 preview.parse_markdown(changed)
 
     def test_english_markdown_headings_are_supported(self):
         text = (preview.STORIES / "EP01.md").read_text()
-        for before, after in {"標題": "Title", "氛圍": "Genre", "標籤": "Tags", "角色": "Characters",
+        original = preview.parse_markdown(text)
+        for before, after in {"角色檔": "Character profile", "共同場景": "Setting", "服裝": "Wardrobe",
+                              "標題": "Title", "氛圍": "Genre", "標籤": "Tags", "角色": "Characters",
                               "旁白": "Narration", "畫面": "Action", "主角參考": "Character references",
-                              "表情": "Expression"}.items():
+                              "表情": "Expression", "動作": "Action", "鏡頭": "Shot"}.items():
             text = text.replace(before, after)
         for i in range(1, 5):
             text = text.replace(f"第{i}幕", f"Scene {i}")
-        self.assertEqual(preview.parse_markdown(text), self.fixture())
+        self.assertEqual(preview.parse_markdown(text), original)
+
+    def test_one_wardrobe_change_is_applied_to_all_scenes_without_changing_identity(self):
+        source = self.fixture()
+        before = preview.load_script("stories/EP01.md")
+        source["wardrobe"] = {"one_piece": "Opaque emerald-green midi dress", "hosiery": "Plain ivory cotton socks",
+                              "footwear": "Brown flat loafers", "accessories": "Small stud earrings"}
+        preview.validate_script(source)
+        for scene in source["scenes"]:
+            prompt = preview.build_scene_prompt(scene, source, "photorealistic", before["character_profile"])
+            self.assertIn("Opaque emerald-green midi dress", prompt)
+            self.assertIn("Plain ivory cotton socks", prompt)
+            self.assertNotIn("Ivory satin", prompt)
+            self.assertNotIn("20-denier", prompt)
+        self.assertNotIn("155 cm", preview.build_scene_prompt(source["scenes"][3], source, "photorealistic",
+                                                              before["character_profile"]))
+
+    def test_location_override_does_not_change_the_episode_outfit(self):
+        source = self.fixture()
+        source["scenes"][1]["location"] = "A quiet cafe beside a window"
+        prompt = preview.build_scene_prompt(source["scenes"][1], source, "photorealistic", None)
+        self.assertIn("A quiet cafe", prompt)
+        self.assertNotIn(source["setting"]["location"], prompt)
+        self.assertIn(source["wardrobe"]["top"], prompt)
+
+    def test_structured_conflicts_stop_before_paid_client_creation(self):
+        from google import genai
+        original = (preview.STORIES / "EP01.md").read_text()
+        cases = [
+            original.replace("### 動作", "### 服裝", 1),
+            original.replace("- 襪類：", "- 襪子拼錯：", 1),
+            original.replace("- 襪類：", "- 上衣：Duplicate\n- 襪類：", 1),
+            original.replace("- 上衣：", "- 連身衣：Contradictory dress\n- 上衣：", 1),
+            original.replace("- 臉部入鏡：是", "- 臉部入鏡：否", 1),
+            original.replace("- 臉部入鏡：否", "- 臉部入鏡：是"),
+            original.replace("## 第4幕", "## 第4幕\n\n### 表情\n\nSmile at camera"),
+            original.replace("## 服裝", "## 角色\n\n- A conflicting model\n\n## 服裝"),
+            original.replace("assets/characters/ava/profile.md", "../outside.md"),
+        ]
+        for text in cases:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".md", dir=preview.STORIES) as source:
+                source.write(text)
+                source.flush()
+                with self.subTest(text=text[:20]), patch.object(sys, "argv", ["script_preview.py", "--script", source.name]), \
+                        patch.object(genai, "Client", side_effect=AssertionError) as client, \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(preview.main(), 1)
+                    client.assert_not_called()
+
+    def test_reusable_profile_and_named_images_are_independent_of_field_order(self):
+        from story_structure import parse_profile
+        source = (preview.ROOT / "assets/characters/ava/profile.md").read_text()
+        source = source.replace("- 肖像：portrait.png\n- 全身：full_body.png", "- 全身：full_body.png\n- 肖像：portrait.png")
+        profile = parse_profile(source)
+        self.assertEqual(profile["references"]["portrait"], "portrait.png")
+        with self.assertRaises(ValueError):
+            parse_profile(source.replace("## 外觀", "## 服裝"))
+
+    def test_profile_image_paths_cannot_escape_the_character_directory(self):
+        source = (preview.ROOT / "assets/characters/ava/profile.md").read_text()
+        with tempfile.TemporaryDirectory(dir=preview.ROOT / "assets/characters") as temp:
+            path = Path(temp) / "profile.md"
+            path.write_text(source.replace("portrait.png", "/tmp/outside.png"))
+            with self.assertRaisesRegex(ValueError, "不可離開"):
+                preview.expand_character_profile({"character_profile": str(path.relative_to(preview.ROOT))})
 
     def test_character_reference_paths_are_checked_before_any_api_call(self):
         with tempfile.TemporaryDirectory(dir=preview.ROOT / "assets/characters") as temp:

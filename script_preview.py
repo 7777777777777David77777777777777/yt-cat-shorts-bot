@@ -15,6 +15,8 @@ from PIL import Image
 import main as factory
 from preview_ep01 import make_keyframe, safe_error
 from lookbook_render import make_original_bgm, render_lookbook
+from story_structure import (WARDROBE_FIELDS, SETTING_FIELDS, parse_items, parse_shot,
+                             parse_profile, validate_structure, format_wardrobe)
 
 ROOT = Path(__file__).resolve().parent
 STORIES = ROOT / "stories"
@@ -39,7 +41,7 @@ IDENTITY_INSTRUCTIONS = (
     "eye shape, nose, lips, jaw width, hairline and hairstyle. The second identity image, when present, "
     "defines natural adult body proportions. Do not average the two faces or substitute another model. "
     "Preserve the compact natural build without slimming the body, lengthening the legs or narrowing the jaw. "
-    "Their reference clothes, white socks, studio background "
+    "Their reference clothing, footwear, studio background "
     "and neutral expression are not this episode's wardrobe or location. Use the episode wardrobe "
     "and scene description instead. Facial expression, gaze and posture follow each scene; "
     "preserve identity without freezing the reference expression."
@@ -50,7 +52,12 @@ def parse_markdown(text):
     """Parse explicit headings, never ask a language model to interpret the story."""
     aliases = {"標題": "title", "title": "title", "氛圍": "genre", "genre": "genre",
                "標籤": "tags", "tags": "tags", "角色": "characters", "characters": "characters",
-               "主角參考": "character_references", "character references": "character_references"}
+               "主角參考": "character_references", "character references": "character_references",
+               "角色檔": "character_profile", "character profile": "character_profile",
+               "服裝": "wardrobe", "wardrobe": "wardrobe", "共同場景": "setting", "setting": "setting"}
+    scene_aliases = {"旁白": "narration", "narration": "narration", "畫面": "action", "action": "action",
+                     "動作": "action", "表情": "expression", "expression": "expression",
+                     "地點": "location", "location": "location", "鏡頭": "shot", "shot": "shot"}
     fields, key, scene, episode_id = {}, None, None, None
     seen_scenes = set()
     for line_number, line in enumerate(text.splitlines(), 1):
@@ -74,9 +81,8 @@ def parse_markdown(text):
                 continue
             if level == 2 and label.lower() in aliases:
                 key, scene = aliases[label.lower()], None
-            elif level == 3 and scene is not None and label.lower() in ("旁白", "narration", "畫面", "action", "表情", "expression"):
-                field = {"旁白": "narration", "narration": "narration", "畫面": "action", "action": "action",
-                         "表情": "expression", "expression": "expression"}[label.lower()]
+            elif level == 3 and scene is not None and label.lower() in scene_aliases:
+                field = scene_aliases[label.lower()]
                 key = f"scene{scene}_{field}"
             else:
                 raise ValueError(f"第 {line_number} 行：不支援標題 {label!r}，請沿用 stories/EP01.md 格式")
@@ -104,16 +110,22 @@ def parse_markdown(text):
     if "character_references" in fields:
         result["character_references"] = [re.sub(r"^\s*[-*]\s+", "", line).strip()
                                           for line in value("character_references").splitlines() if line.strip()]
+    for name in ("character_profile", "wardrobe", "setting"):
+        if name in fields:
+            result[name] = (parse_items(value(name), WARDROBE_FIELDS if name == "wardrobe" else SETTING_FIELDS, name)
+                            if name != "character_profile" else value(name))
     for i, scene in enumerate(result["scenes"], 1):
-        if f"scene{i}_expression" in fields:
-            scene["expression"] = value(f"scene{i}_expression")
+        for name in ("expression", "location", "shot"):
+            if f"scene{i}_{name}" in fields:
+                scene[name] = parse_shot(value(f"scene{i}_{name}")) if name == "shot" else value(f"scene{i}_{name}")
     return result
 
 
 def validate_script(data):
     if not isinstance(data, dict):
         raise ValueError("劇本解析結果必須是物件")
-    allowed = {"id", "title", "genre", "characters", "tags", "scenes", "description", "character_references"}
+    allowed = {"id", "title", "genre", "characters", "tags", "scenes", "description", "character_references",
+               "character_profile", "wardrobe", "setting"}
     unknown = set(data) - allowed
     if unknown:
         raise ValueError(f"不支援的劇本欄位：{', '.join(sorted(unknown))}")
@@ -131,7 +143,7 @@ def validate_script(data):
     if not isinstance(scenes, list) or len(scenes) != 4:
         raise ValueError("目前測試格式需剛好四幕")
     for number, scene in enumerate(scenes, 1):
-        if not isinstance(scene, dict) or "action" not in scene or set(scene) - {"narration", "action", "expression"}:
+        if not isinstance(scene, dict) or "action" not in scene or set(scene) - {"narration", "action", "expression", "location", "shot"}:
             raise ValueError(f"第 {number} 幕需包含 action 欄位")
         if not isinstance(scene["action"], str) or not scene["action"].strip():
             raise ValueError(f"第 {number} 幕 action 不能空白")
@@ -139,6 +151,8 @@ def validate_script(data):
             raise ValueError(f"第 {number} 幕旁白欄位必須是文字；寫真模式不會使用旁白")
         if not isinstance(scene.get("expression", ""), str):
             raise ValueError(f"第 {number} 幕表情欄位必須是文字")
+        if "location" in scene and (not isinstance(scene["location"], str) or not scene["location"].strip()):
+            raise ValueError(f"第 {number} 幕地點不能空白")
     refs = data.get("character_references", [])
     if not isinstance(refs, list) or len(refs) > 2 or any(not isinstance(r, str) or not r.strip() for r in refs):
         raise ValueError("主角參考需為最多兩個圖片路徑")
@@ -146,7 +160,70 @@ def validate_script(data):
         raise ValueError("tags 請使用文字陣列")
     if "description" in data and not isinstance(data["description"], str):
         raise ValueError("description 必須是文字")
+    validate_structure(data)
     return data
+
+
+def expand_character_profile(data):
+    """Resolve an explicitly selected reusable character; never infer Ava for other stories."""
+    if "character_profile" not in data:
+        return None
+    value = data["character_profile"]
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("角色檔路徑不能空白")
+    if data.get("characters") or "character_references" in data:
+        raise ValueError("使用角色檔時，請移除集內重複的角色及主角參考欄位")
+    path = (ROOT / value).resolve()
+    if not path.is_relative_to((ROOT / "assets/characters").resolve()) or path.suffix.lower() != ".md":
+        raise ValueError("角色檔必須是 assets/characters/ 內的 Markdown 檔案")
+    source = path.read_bytes()
+    profile = parse_profile(source.decode("utf-8-sig"))
+    references = []
+    for role in ("portrait", "full_body"):
+        if role in profile["references"]:
+            reference = (path.parent / profile["references"][role]).resolve()
+            if not reference.is_relative_to((ROOT / "assets/characters").resolve()):
+                raise ValueError("角色檔參考圖不可離開 assets/characters/")
+            references.append(str(reference.relative_to(ROOT)))
+    data["characters"] = [" ".join(profile[field] for field in ("identity", "appearance", "build"))]
+    data["character_references"] = references
+    return {"path": str(path.relative_to(ROOT)), "sha256": hashlib.sha256(source).hexdigest(),
+            "name": profile["name"], "identity": profile["identity"], "appearance": profile["appearance"],
+            "build": profile["build"]}
+
+
+def build_scene_prompt(scene, data, style_prompt, profile):
+    """Compose one prompt from independent identity, wardrobe, setting and shot fields."""
+    shot = scene.get("shot", {})
+    face_visible = shot.get("face_visible", True)
+    # Clothing details do not need full bust/hip/height descriptions which can encourage a full-body shot.
+    if profile and shot.get("type") == "detail":
+        identity = profile["identity"] + " Identity images are for continuity only; the face is outside this shot."
+    else:
+        identity = "\n".join(f"{i}. {factory.clean_prompt_text(c)}" for i, c in enumerate(data["characters"], 1))
+    sections = [f"Character identity:\n{identity}"]
+    if "wardrobe" in data:
+        sections.append("Episode wardrobe (single source for all four scenes):\n" + format_wardrobe(data["wardrobe"]) +
+                        "\nKeep these exact garments and accessories throughout the episode. Identity reference clothes are not this outfit.")
+    setting = data.get("setting", {})
+    location = scene.get("location") or setting.get("location")
+    if location:
+        sections.append(f"Scene location: {location}\nLighting: {setting.get('lighting', 'Soft natural lighting')}")
+    sections.extend([f"Editorial mood: {data['genre']}", f"Visual style: {style_prompt}",
+                     f"Scene action: {factory.clean_prompt_text(scene['action'])}"])
+    if face_visible:
+        sections.append("Expression and gaze: " + (scene.get("expression") or "Follow the scene naturally."))
+    if shot:
+        sections.append("CAMERA AND FRAMING:\n" + "\n".join(f"{key}: {value}" for key, value in shot.items()))
+        if not face_visible:
+            sections.append("Face outside frame. Do not add a head, face, portrait inset or full-body figure.")
+    sections.append(
+        "One cohesive full-bleed vertical 9:16 fashion image, background extending to all four edges. "
+        "Natural anatomy and clear garment details, with a small framing margin for a gentle zoom. "
+        "No lettering, captions, logos, watermark, border, inset or collage. No empty subtitle strip. "
+        "SHOT PRIORITY: The current camera fields and scene action control composition, not the reference images' poses or crops. "
+        "For a detail shot show only the stated coverage; never expand it into a full-body portrait.")
+    return "\n\n".join(sections)
 
 
 def resolve_character_references(paths):
@@ -167,32 +244,21 @@ def load_script(script_path, style="photorealistic"):
         raise ValueError("劇本必須是 stories/ 資料夾內的 Markdown（.md）檔案")
     source_bytes = path.read_bytes()
     text = source_bytes.decode("utf-8-sig")
-    data = validate_script(parse_markdown(text))
+    data = parse_markdown(text)
+    profile = expand_character_profile(data)
+    data = validate_script(data)
     identity_paths = resolve_character_references(data.get("character_references", []))
     if style not in STYLES:
         raise ValueError("不支援的畫風")
     selected = STYLES[style]
-    characters = [factory.clean_prompt_text(c) for c in data["characters"]]
-    references = "\n".join(f"{i}. {c}" for i, c in enumerate(characters, 1))
     scenes = [{"narration": s.get("narration", ""), "scene_action": s["action"], "expression": s.get("expression", ""),
-               "full_image_prompt": (
-                   f"Scene action: {factory.clean_prompt_text(s['action'])}\n"
-                   f"Expression and gaze: {s.get('expression', '') or 'Follow the scene naturally; if the face is outside the frame, do not add a face.'}\n"
-                   f"Editorial mood: {data['genre']}\nVisual style: {selected['prompt']}\n"
-                   f"Character references:\n{references}\n"
-                   "One cohesive full-bleed vertical 9:16 fashion photograph, background extending to all four edges. "
-                   "Follow the requested pose and framing; preserve the character and wardrobe. "
-                   "Natural anatomy and hands, clear clothing details and facial detail where visible, generous framing for a gentle zoom. "
-                   "No lettering, captions, logos, watermark, border, inset or collage. "
-                   "Use the whole composition naturally; do not reserve an empty subtitle strip. "
-                   "SHOT PRIORITY: Follow this scene's requested camera crop and subject placement, "
-                   "independently of the attached images' compositions. For a garment-detail shot, "
-                   "show only the specified garment region; keep the head, upper body and other "
-                   "out-of-frame parts excluded. Do not expand a detail shot into a full-body portrait.")}
+               "shot": s.get("shot", {}), "location": s.get("location") or data.get("setting", {}).get("location", ""),
+               "full_image_prompt": build_scene_prompt(s, data, selected["prompt"], profile)}
               for s in data["scenes"]]
     return {"id": data["id"], "title": data["title"], "story_genre": data["genre"],
             "description": data.get("description", ""), "tags": data.get("tags", []),
             "characters": data["characters"], "scenes": scenes,
+            "character_profile": profile, "wardrobe": data.get("wardrobe", {}), "setting": data.get("setting", {}),
             "character_reference_images": [str(path.relative_to(ROOT)) for path in identity_paths],
             "visual_style_id": style, "visual_style_name": selected["name"],
             "source_path": str(path.relative_to(ROOT)), "narration_enabled": False, "subtitles_enabled": False,
