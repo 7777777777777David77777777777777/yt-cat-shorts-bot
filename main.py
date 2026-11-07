@@ -30,7 +30,7 @@ VOICE_ROTATION = [
     "en-AU-NatashaNeural"
 ]
 
-# 同一集六次發送使用六種媒材；每版四幕共用同一個設定。
+# 同一集六次發送使用六種媒材；每版所有分鏡共用同一個設定。
 VISUAL_STYLE_ROTATION = [
     {
         "id": "cinematic_3d", "name": "3D 電影動畫",
@@ -90,6 +90,11 @@ for _scene_number in range(1, 5):
     SHEET_HEADERS[f"s{_scene_number}_narration"] = f"第 {_scene_number} 幕：英文台詞"
     SHEET_HEADERS[f"s{_scene_number}_action"] = f"第 {_scene_number} 幕：畫面動作"
 
+OPTIONAL_SCENE_HEADERS = {}
+for _scene_number in (5, 6):
+    OPTIONAL_SCENE_HEADERS[f"s{_scene_number}_narration"] = f"第 {_scene_number} 幕：英文台詞"
+    OPTIONAL_SCENE_HEADERS[f"s{_scene_number}_action"] = f"第 {_scene_number} 幕：畫面動作"
+
 # 保留舊 art_dna 傳輸欄名，兼容尚未更新的 Apps Script；D 欄可改名為劇本類型。
 SHEET_HEADER_ALIASES = {"art_dna": ("劇本類型", "故事類型", "劇本風格", "genre", "story_genre")}
 
@@ -110,6 +115,21 @@ def parse_sent_count(value) -> int:
     return int(match[1])
 
 
+def episode_scene_count(row_dict: dict) -> int:
+    """前四幕必填；第五、六幕須成對且連續，不能默默捨棄半填內容。"""
+    count = 4
+    for i in (5, 6):
+        filled = [bool(str(row_dict.get(f"s{i}_{field}") or "").strip())
+                  for field in ("narration", "action")]
+        if any(filled):
+            if not all(filled):
+                raise ValueError(f"第 {i} 幕的英文台詞與畫面動作必須一起填寫")
+            if count != i - 1:
+                raise ValueError("第六幕有內容時，第五幕也必須完整填寫")
+            count = i
+    return count
+
+
 def validate_episode_row(row_dict: dict):
     """拒絕舊 Webhook 的兩角色欄位錯位，避免把角色或動作當旁白。"""
     if not isinstance(row_dict, dict):
@@ -122,11 +142,11 @@ def validate_episode_row(row_dict: dict):
     if not re.fullmatch(r"EP\d+", str(row_dict["id"]).strip(), flags=re.IGNORECASE):
         raise ValueError("集數 ID 必須是 EP 加數字")
     if re.match(r"^Scene\s*\d+\b|^第\s*\d+\s*幕", str(row_dict["title"]).strip(), re.IGNORECASE):
-        raise ValueError("標題讀到了 Scene 動作欄；請檢查 P 欄與 Webhook 對應")
-    for i in range(1, 5):
+        raise ValueError("標題讀到了 Scene 動作欄；請檢查標題欄與 Webhook 對應（四幕 P／六幕 T）")
+    for i in range(1, episode_scene_count(row_dict) + 1):
         narration = str(row_dict[f"s{i}_narration"]).strip()
         if re.match(r"^(?:Character\s*\d+|Scene\s*\d+)\s*[:：]|^角色\s*\d+", narration, re.IGNORECASE):
-            raise ValueError(f"第 {i} 幕台詞讀到了角色設定或動作欄；請檢查 H～O 欄與 Webhook 對應")
+            raise ValueError(f"第 {i} 幕台詞讀到了角色設定或動作欄；請檢查分鏡欄與 Webhook 對應")
     parse_sent_count(row_dict["sent_count"])
 
 
@@ -177,13 +197,21 @@ def episode_from_sheet_csv(csv_text: str) -> dict:
             if not any(cell in {normalize_header(SHEET_HEADERS["id"]), "id"} for cell in normalized):
                 continue
             columns = {}
-            for key, label in SHEET_HEADERS.items():
+            for key, label in {**SHEET_HEADERS, **OPTIONAL_SCENE_HEADERS}.items():
                 labels = [normalize_header(label)] + [normalize_header(alias) for alias in SHEET_HEADER_ALIASES.get(key, ())]
                 matches = [i for i, cell in enumerate(normalized)
                            if cell == key or any(cell.startswith(alias) for alias in labels)]
+                if not matches and key in OPTIONAL_SCENE_HEADERS:
+                    continue
                 if len(matches) != 1:
                     raise ValueError(f"Sheet 欄位缺少或重複：{label}；請使用三角色片單表頭")
                 columns[key] = matches[0]
+            for i in (5, 6):
+                pair = {f"s{i}_narration", f"s{i}_action"}
+                if pair & columns.keys() and not pair <= columns.keys():
+                    raise ValueError(f"Sheet 第 {i} 幕缺少英文台詞或畫面動作表頭")
+            if "s6_narration" in columns and "s5_narration" not in columns:
+                raise ValueError("Sheet 有第六幕表頭，但缺少第五幕表頭")
             continue
         row_dict = {key: row[index].strip() if index < len(row) else ""
                     for key, index in columns.items()}
@@ -241,10 +269,13 @@ def clean_base_title(raw_title: str) -> str:
 
 def parse_episode_from_row(row_dict: dict) -> dict:
     """
-    支援 18 欄「三角色獨立設定 (char1_dna, char2_dna, char3_dna) + 4 幕台詞與動作嚴格對齊」結構
+    支援 22 欄六幕劇本，並相容 18 欄四幕；旁白與動作必須嚴格成對。
     """
-    if isinstance(row_dict, dict) and "genre" in row_dict:
-        row_dict = dict(row_dict, art_dna=row_dict["genre"])
+    if isinstance(row_dict, dict):
+        for alias in ("genre", "genre_dna"):
+            if alias in row_dict:
+                row_dict = dict(row_dict, art_dna=row_dict[alias])
+                break
     validate_episode_row(row_dict)
     ep_id = str(row_dict["id"]).strip()
     sent_count = parse_sent_count(row_dict["sent_count"])
@@ -252,12 +283,9 @@ def parse_episode_from_row(row_dict: dict) -> dict:
     visual_style = VISUAL_STYLE_ROTATION[sent_count % len(VISUAL_STYLE_ROTATION)]
     characters = [clean_prompt_text(row_dict[f"char{i}_dna"]) for i in range(1, 4)]
 
-    raw_scenes = [
-        (row_dict.get("s1_narration", ""), row_dict.get("s1_action", "")),
-        (row_dict.get("s2_narration", ""), row_dict.get("s2_action", "")),
-        (row_dict.get("s3_narration", ""), row_dict.get("s3_action", "")),
-        (row_dict.get("s4_narration", ""), row_dict.get("s4_action", ""))
-    ]
+    scene_count = episode_scene_count(row_dict)
+    raw_scenes = [(row_dict[f"s{i}_narration"], row_dict[f"s{i}_action"])
+                  for i in range(1, scene_count + 1)]
     cam_styles = ["smooth_push_in", "smooth_pan_right", "smooth_pull_out", "smooth_push_in"]
 
     scenes = []
@@ -267,7 +295,7 @@ def parse_episode_from_row(row_dict: dict) -> dict:
         scenes.append({
             "narration": str(narr).strip(),
             "scene_action": str(act).strip(),
-            "camera_style": cam_styles[i % 4],
+            "camera_style": cam_styles[i % len(cam_styles)],
             "full_image_prompt": full_prompt
         })
 
@@ -285,6 +313,7 @@ def parse_episode_from_row(row_dict: dict) -> dict:
         "row_index": row_dict.get("row_index", 8),
         "sent_count": sent_count,
         "target_sends": 6,
+        "scene_count": len(scenes),
         "story_genre": story_genre,
         "selected_visual_style": visual_style["prompt"],
         "visual_style_id": visual_style["id"],
@@ -771,7 +800,7 @@ def main():
     total_scenes = len(scenes)
     master_seed = random.randint(10000, 888888)
 
-    print(f"🎬 啟動 Google Sheet 18欄三角色連動產線 | 集數: {story['id']} (第 {story['sent_count'] + 1}/6 次發送)")
+    print(f"🎬 啟動 Google Sheet 三角色連動產線 | 集數: {story['id']} | 共 {total_scenes} 幕 (第 {story['sent_count'] + 1}/6 次發送)")
     print(f"📝 Sheet D 欄設定：{story.get('story_genre')}")
     print(f"🎨 本版畫風：{story.get('visual_style_name')}（第 {story['sent_count'] + 1}/6 版）")
     print(f"🐾 三角色鎖定: {story.get('character_dna')}")

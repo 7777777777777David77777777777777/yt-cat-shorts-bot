@@ -125,7 +125,7 @@ def report_back_to_google_sheet(meta: dict, youtube_url: str):
     當影片成功發佈到 YouTube 後，自動呼叫 Google Apps Script Webhook (`SHEET_WEBHOOK_URL`)：
     1. 將該集的 `已發送次數` + 1 (例如 0 -> 1, ..., 5 -> 6)
     2. 若未滿 6 次，狀態更新為 `連發中 (k/6)`；一旦滿 6 次，狀態自動改為 `已完成 (Completed)`，下一輪就會自動換下一集！
-    3. 將影片網址與產圖用量追加到 R 欄（需部署 google_apps_script.gs）
+    3. 將影片網址與產圖用量追加到六幕 V 欄／舊四幕 R 欄（需部署 google_apps_script.gs）
     """
     webhook_url = os.environ.get("SHEET_WEBHOOK_URL", "").strip()
     if not webhook_url:
@@ -149,10 +149,12 @@ def report_back_to_google_sheet(meta: dict, youtube_url: str):
         if not isinstance(result, dict) or result.get("status") != "updated":
             raise ValueError("Webhook 未確認回寫成功")
         version = result.get("script_version")
-        if isinstance(version, str) and result.get("url_column") == 18:
-            print(f"📊 Webhook 部署版本：{version}；網址回填 R 欄（18）。")
+        column = result.get("url_column")
+        if isinstance(version, str) and column in (18, 22):
+            letter = "V" if column == 22 else "R"
+            print(f"📊 Webhook 部署版本：{version}；網址回填 {letter} 欄（{column}）。")
         else:
-            print("⚠️ Webhook 已接受回寫，但未確認 R 欄版本；請更新原部署或檢查 SHEET_WEBHOOK_URL。")
+            print("⚠️ Webhook 已接受回寫，但未確認網址欄位版本；請更新原部署或檢查 SHEET_WEBHOOK_URL。")
         print(f"📊 已同步回寫 Google Sheet！集數 {payload['id']} 發送進度: {payload['new_sent_count']}/6")
         print(f"📊 {payload['usage_summary']}")
     except (requests.RequestException, ValueError) as exc:
