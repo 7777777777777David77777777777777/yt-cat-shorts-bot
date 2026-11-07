@@ -46,9 +46,9 @@ def make_original_bgm(path, duration, sample_rate=22050):
     return Path(path)
 
 
-def photo_frame(image, progress, index):
+def photo_frame(image, progress, index, zoom_amount=0.05):
     ease = 0.5 - 0.5 * math.cos(math.pi * progress)
-    zoom = 1.00 + 0.05 * (ease if index % 2 == 0 else 1 - ease)
+    zoom = 1.00 + zoom_amount * (ease if index % 2 == 0 else 1 - ease)
     width, height = 1080 / zoom, 1920 / zoom
     x = (1080 - width) / 2
     y = (1920 - height) / 2
@@ -56,10 +56,13 @@ def photo_frame(image, progress, index):
                            (x, y, x + width, y + height), resample=Image.Resampling.BICUBIC)
 
 
-def render_lookbook(images, bgm, final, scene_seconds=5, fps=30):
+def render_lookbook(images, bgm, final, scene_seconds=5, fps=30, zoom_amounts=None):
     if not images or not 0 < scene_seconds <= 30:
         raise ValueError("圖片不可空白，每幕秒數需介於 0～30 秒")
     frame_count = max(1, round(scene_seconds * fps))
+    zoom_amounts = [0.05] * len(images) if zoom_amounts is None else zoom_amounts
+    if len(zoom_amounts) != len(images) or any(not 0 <= v <= 0.1 for v in zoom_amounts):
+        raise ValueError("每張圖片需有一個介於 0～0.1 的推拉幅度")
     duration = len(images) * frame_count / fps
     loaded = []
     for path in images:
@@ -79,9 +82,9 @@ def render_lookbook(images, bgm, final, scene_seconds=5, fps=30):
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=stderr)
         try:
             for index, image in enumerate(loaded):
-                next_frame = photo_frame(loaded[index + 1], 0, index + 1) if index + 1 < len(loaded) else None
+                next_frame = photo_frame(loaded[index + 1], 0, index + 1, zoom_amounts[index + 1]) if index + 1 < len(loaded) else None
                 for frame_index in range(frame_count):
-                    frame = photo_frame(image, frame_index / max(1, frame_count - 1), index)
+                    frame = photo_frame(image, frame_index / max(1, frame_count - 1), index, zoom_amounts[index])
                     remaining = frame_count - 1 - frame_index
                     if next_frame is not None and transition and remaining < transition:
                         alpha = 0.5 - 0.5 * math.cos(math.pi * (1 - remaining / transition))

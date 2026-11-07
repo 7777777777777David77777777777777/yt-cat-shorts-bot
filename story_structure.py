@@ -1,6 +1,8 @@
-"""Strict, dependency-free Markdown field parsing for fashion story structure."""
+"""Strict Markdown field parsing for fashion story structure."""
 
 import re
+
+from shot_framing import validate_crop
 
 
 WARDROBE_FIELDS = {"上衣": "top", "下身": "bottom", "連身衣": "one_piece", "襪類": "hosiery",
@@ -9,7 +11,8 @@ WARDROBE_FIELDS = {"上衣": "top", "下身": "bottom", "連身衣": "one_piece"
 SETTING_FIELDS = {"地點": "location", "光線": "lighting", "location": "location", "lighting": "lighting"}
 SHOT_FIELDS = {"景別": "type", "角度": "angle", "主體": "subject", "入鏡範圍": "coverage",
                "排除": "exclude", "臉部入鏡": "face_visible", "type": "type", "angle": "angle",
-               "subject": "subject", "coverage": "coverage", "exclude": "exclude", "face_visible": "face_visible"}
+               "subject": "subject", "coverage": "coverage", "exclude": "exclude", "face_visible": "face_visible",
+               "取景來源": "source_scene", "source_scene": "source_scene", "裁切範圍": "crop", "crop": "crop"}
 SHOT_TYPES = {"全身": "full_body", "半身": "half_body", "肖像": "portrait", "服飾細節": "detail",
               "full_body": "full_body", "half_body": "half_body", "portrait": "portrait", "detail": "detail"}
 SHOT_DEFAULTS = {
@@ -46,6 +49,17 @@ def parse_shot(text):
     if visible not in ("是", "否", "true", "false"):
         raise ValueError("臉部入鏡請填是或否")
     shot["face_visible"] = visible in ("是", "true")
+    if "source_scene" in shot:
+        match = re.fullmatch(r"(?:第|Scene\s*)?([1-4])(?:幕)?", shot["source_scene"], re.IGNORECASE)
+        if not match:
+            raise ValueError("取景來源請填前面已完成的幕次，例如第1幕")
+        shot["source_scene"] = int(match[1])
+    if "crop" in shot:
+        try:
+            shot["crop"] = [float(v.strip()) for v in re.split(r"[,，]", shot["crop"])]
+        except ValueError:
+            raise ValueError("裁切範圍請填四個以逗號分隔的數值") from None
+        validate_crop(shot["crop"])
     shot.setdefault("angle", "Eye-level with natural perspective")
     if kind in SHOT_DEFAULTS:
         shot.setdefault("coverage", SHOT_DEFAULTS[kind])
@@ -97,6 +111,14 @@ def validate_structure(data):
             raise ValueError(f"第 {i} 幕景別與臉部入鏡設定衝突；服飾細節不含臉部")
         if not shot["face_visible"] and scene.get("expression", "").strip():
             raise ValueError(f"第 {i} 幕臉不入鏡，請移除表情欄位")
+        if "crop" in shot:
+            validate_crop(shot["crop"])
+        if "source_scene" in shot:
+            source = shot["source_scene"]
+            if isinstance(source, bool) or not isinstance(source, int) or not 1 <= source < i:
+                raise ValueError(f"第 {i} 幕取景來源必須是前面已完成的幕次")
+            if "crop" not in shot:
+                raise ValueError(f"第 {i} 幕使用取景來源時，必須明確指定裁切範圍")
     if data["scenes"][0]["shot"]["type"] != "full_body":
         raise ValueError("第一幕請使用全身景別，建立當集服裝參考")
 

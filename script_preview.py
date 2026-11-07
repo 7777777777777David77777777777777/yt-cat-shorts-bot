@@ -15,12 +15,14 @@ from PIL import Image
 import main as factory
 from preview_ep01 import make_keyframe, safe_error
 from lookbook_render import make_original_bgm, render_lookbook
+from shot_framing import crop_scene
 from story_structure import (WARDROBE_FIELDS, SETTING_FIELDS, parse_items, parse_shot,
                              parse_profile, validate_structure, format_wardrobe)
 
 ROOT = Path(__file__).resolve().parent
 STORIES = ROOT / "stories"
 STYLES = {style["id"]: style for style in factory.VISUAL_STYLE_ROTATION}
+PIPELINE_VERSION = "structured-lookbook-with-source-crops-v1"
 REFERENCE_INSTRUCTIONS = (
     "Episode wardrobe reference: The LAST attached image is scene 1 and defines the exact wardrobe. "
     "Use the exact same garments, not merely similar colors or garment categories. "
@@ -214,7 +216,8 @@ def build_scene_prompt(scene, data, style_prompt, profile):
     if face_visible:
         sections.append("Expression and gaze: " + (scene.get("expression") or "Follow the scene naturally."))
     if shot:
-        sections.append("CAMERA AND FRAMING:\n" + "\n".join(f"{key}: {value}" for key, value in shot.items()))
+        sections.append("CAMERA AND FRAMING:\n" + "\n".join(f"{key}: {value}" for key, value in shot.items()
+                                                               if key not in ("source_scene", "crop")))
         if not face_visible:
             sections.append("Face outside frame. Do not add a head, face, portrait inset or full-body figure.")
     sections.append(
@@ -298,6 +301,7 @@ def render_script(story, output, client, image_model, scene_seconds=5, bgm_sourc
         identities.append(destination)
     records = []
     metadata = dict(story, status="running", image_model=image_model, video_generation_requests=0,
+                    pipeline_version=PIPELINE_VERSION, code_revision=os.environ.get("GITHUB_SHA", "local"), scene_outputs=[],
                     reference_strategy="character_identity_and_fixed_first_scene" if identities else "fixed_first_scene", presentation="photo_lookbook",
                     narration_enabled=False, subtitles_enabled=False, scene_seconds=scene_seconds)
     save = lambda: (output / "metadata.json").write_text(
@@ -306,10 +310,27 @@ def render_script(story, output, client, image_model, scene_seconds=5, bgm_sourc
     images = []
     try:
         for number, scene in enumerate(story["scenes"], 1):
+            image = scenes_dir / f"scene_{number}.png"
+            shot = scene.get("shot", {})
+            source_number = shot.get("source_scene")
+            if source_number is not None:
+                if not isinstance(source_number, int) or isinstance(source_number, bool) or not 1 <= source_number < number:
+                    raise ValueError("取景來源必須是前面已完成的幕次")
+                source = Path(images[source_number - 1])
+                print(f"[{number}/4] 由第 {source_number} 幕取景；不呼叫產圖 API", flush=True)
+                framing = crop_scene(source, image, shot["crop"])
+                plan = scenes_dir / f"scene_{number}.plan.txt"
+                plan.write_text("Locally cropped from an existing scene. No image API request.\n" +
+                                scene["full_image_prompt"], encoding="utf-8")
+                metadata["scene_outputs"].append(dict(framing, scene=number, method="source_crop",
+                    source_scene=source_number, source_image=str(source.relative_to(output)),
+                    source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(), image=str(image.relative_to(output))))
+                images.append(str(image))
+                save()
+                continue
             print(f"[{number}/4] " + ("依主角參考建立當集全身服裝圖" if identities and number == 1 else
                                     "建立全身服裝參考圖" if number == 1 else
                                     "以主角圖及第 1 幕圖片作固定參考" if identities else "以第 1 幕圖片作固定參考"), flush=True)
-            image = scenes_dir / f"scene_{number}.png"
             record = factory.start_image_request(records, "google", image_model, number)
             reference = scenes_dir / "scene_1.png" if number > 1 else None
             reference_context = []
@@ -331,7 +352,15 @@ def render_script(story, output, client, image_model, scene_seconds=5, bgm_sourc
             prompt_path.write_text(prompt, encoding="utf-8")
             record["prompt_file"] = str(prompt_path.relative_to(output))
             make_keyframe(client, image_model, prompt, image, record, image_size=(1080, 1920), reference_images=references)
+            result = {"scene": number, "method": "generated", "image": str(image.relative_to(output))}
+            if "crop" in shot:
+                source = image.with_suffix(".generated.png")
+                image.rename(source)
+                result.update(crop_scene(source, image, shot["crop"]), method="generated_then_crop",
+                              source_image=str(source.relative_to(output)), source_sha256=hashlib.sha256(source.read_bytes()).hexdigest())
+            metadata["scene_outputs"].append(result)
             images.append(str(image))
+            save()
         final = output / "preview.mp4"
         duration = len(images) * max(1, round(scene_seconds * 30)) / 30
         bgm = output / ("bgm" + bgm_source.suffix if bgm_source is not None else "bgm.wav")
@@ -342,7 +371,9 @@ def render_script(story, output, client, image_model, scene_seconds=5, bgm_sourc
             shutil.copyfile(bgm_source, bgm)
             metadata["bgm_source"] = str(bgm_source.relative_to(ROOT))
         metadata["bgm_sha256"] = hashlib.sha256(bgm.read_bytes()).hexdigest()
-        render_lookbook(images, bgm, final, scene_seconds=scene_seconds)
+        zooms = [0 if s.get("shot", {}).get("type") == "detail" or "crop" in s.get("shot", {}) else 0.05
+                 for s in story["scenes"]]
+        render_lookbook(images, bgm, final, scene_seconds=scene_seconds, zoom_amounts=zooms)
         probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(final)],
                                capture_output=True, text=True, check=True)
         streams = json.loads(probe.stdout)["streams"]
@@ -370,6 +401,7 @@ def main():
     args = parser.parse_args()
     try:
         story = load_script(args.script, args.style)
+        print(f"產線版本：{PIPELINE_VERSION} | commit：{os.environ.get('GITHUB_SHA', 'local')}", flush=True)
         if not 0 < args.scene_seconds <= 30:
             raise ValueError("每幕秒數需介於 0～30 秒")
         bgm_source = resolve_bgm(args.bgm)

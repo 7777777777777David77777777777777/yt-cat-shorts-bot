@@ -69,7 +69,7 @@ class ScriptReaderTests(unittest.TestCase):
         self.assertEqual([s["shot"]["type"] for s in story["scenes"]], ["full_body", "half_body", "full_body", "detail"])
         self.assertIn("pencil skirt", story["wardrobe"]["bottom"])
         self.assertFalse(story["scenes"][3]["shot"]["face_visible"])
-        self.assertIn("both complete shoes", story["scenes"][3]["shot"]["coverage"])
+        self.assertIn("complete foreground shoe", story["scenes"][3]["shot"]["coverage"])
         self.assertNotIn("blouse", story["characters"][0])
 
     def test_one_two_or_three_characters_are_supported(self):
@@ -177,6 +177,10 @@ class ScriptReaderTests(unittest.TestCase):
             original.replace("## 第4幕", "## 第4幕\n\n### 表情\n\nSmile at camera"),
             original.replace("## 服裝", "## 角色\n\n- A conflicting model\n\n## 服裝"),
             original.replace("assets/characters/ava/profile.md", "../outside.md"),
+            original.replace("取景來源：第1幕", "取景來源：第4幕"),
+            original.replace("0.33, 0.69, 0.64, 1.00", "0.8, 0.64, 0.3, 1.0"),
+            original.replace("0.33, 0.69, 0.64, 1.00", "0.3, nan, 0.7, 1.0"),
+            original.replace("- 裁切範圍：0.33, 0.69, 0.64, 1.00", ""),
         ]
         for text in cases:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".md", dir=preview.STORIES) as source:
@@ -336,22 +340,31 @@ class ScriptRenderTests(unittest.TestCase):
             self.assertEqual({s["codec_type"] for s in info["streams"]}, {"video", "audio"})
             state = json.loads((Path(temp) / "metadata.json").read_text())
             self.assertEqual(state["status"], "completed")
-            self.assertEqual(state["image_usage"]["images_used"], 4)
+            self.assertEqual(state["image_usage"]["images_used"], 3)
             self.assertEqual(state["reference_strategy"], "character_identity_and_fixed_first_scene")
             records = state["image_usage"]["requests"]
-            self.assertEqual([len(r["reference_images"]) for r in records], [2, 3, 3, 3])
+            self.assertEqual([len(r["reference_images"]) for r in records], [2, 3, 3])
             self.assertEqual(len({r["reference_images"][0]["sha256"] for r in records}), 1)
             self.assertEqual(len({r["reference_images"][1]["sha256"] for r in records}), 1)
-            self.assertEqual(len(references), 3)
+            self.assertEqual(len(references), 2)
             self.assertEqual(len(set(references)), 1)
-            self.assertTrue((Path(temp) / "scenes/scene_4.prompt.txt").is_file())
+            self.assertTrue((Path(temp) / "scenes/scene_4.plan.txt").is_file())
+            self.assertFalse((Path(temp) / "scenes/scene_4.prompt.txt").exists())
+            self.assertEqual(len(state["scene_outputs"]), 4)
+            self.assertEqual(state["scene_outputs"][1]["method"], "generated_then_crop")
+            self.assertLessEqual(state["scene_outputs"][1]["crop_pixels"][3], 1000)
+            detail = state["scene_outputs"][3]
+            self.assertEqual(detail["method"], "source_crop")
+            self.assertEqual(detail["source_scene"], 1)
+            self.assertEqual(detail["source_image"], "scenes/scene_1.png")
+            self.assertEqual(detail["source_sha256"], records[1]["reference_sha256"])
             self.assertFalse(state["youtube_upload"])
             self.assertFalse(state["sheet_read"])
             self.assertFalse(state["narration_enabled"])
             self.assertFalse(state["subtitles_enabled"])
             self.assertEqual(state["bgm_source"], "generated_instrumental_96bpm_v1")
             self.assertTrue((Path(temp) / "bgm.wav").is_file())
-            self.assertEqual(generate_image.call_count, 4)
+            self.assertEqual(generate_image.call_count, 3)
             generate_speech.assert_not_called()
             frame_bytes = subprocess.run(["ffmpeg", "-v", "error", "-ss", "0.2", "-i", str(final),
                                           "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-"],
