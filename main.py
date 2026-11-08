@@ -236,6 +236,57 @@ def clean_prompt_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+STORY_TONE_RULES = [
+    (r"喜劇|搞笑|幽默|\b(?:comedy|comic|humou?r|funny)\b", "Playful comic storytelling"),
+    (r"溫馨|療癒|親情|友情|\b(?:warm|heartwarming|friendship|wholesome|tender)\b", "Warm, caring emotional tone"),
+    (r"懸疑|推理|神秘|\b(?:mystery|suspense|detective)\b", "Curiosity and narrative suspense"),
+    (r"冒險|奇遇|救援|\b(?:adventure|rescue)\b", "A sense of adventure and discovery"),
+    (r"奇幻|魔法|\b(?:fantasy|magical)\b", "A sense of fantasy and wonder"),
+    (r"太空|科幻|科技|\b(?:sci[ -]?fi|science fiction|space)\b", "Science-fiction storytelling"),
+    (r"驚悚|恐怖|\b(?:spooky|horror|thriller)\b", "An eerie, suspenseful narrative tone"),
+    (r"浪漫|戀愛|唯美|\b(?:romance|romantic)\b", "A gentle romantic emotional tone"),
+    (r"催淚|悲劇|\b(?:sad|tragedy|tearjerker)\b", "A poignant, emotionally reflective tone"),
+]
+
+
+def parse_story_context(raw: str) -> dict:
+    """D 欄只提供敘事氛圍與有標籤的共同環境，不猜測畫風或補造場景。"""
+    text = str(raw).strip()
+    marker = re.search(r"(?:固定場景|共同場景|場景設定|shared\s+setting|common\s+setting|setting)\s*[:：]",
+                       text, re.IGNORECASE)
+    genre = text[:marker.start()].strip(" ｜|;；\n") if marker else text
+    setting = ""
+    if marker:
+        setting = re.split(r"[｜|]", text[marker.end():], maxsplit=1)[0].strip()
+        if not setting:
+            raise ValueError("D 欄有固定場景標籤，但未填寫場景內容")
+        setting = clean_prompt_text(setting)
+    tones = [cue for pattern, cue in STORY_TONE_RULES if re.search(pattern, genre, re.IGNORECASE)]
+    return {"genre_label": genre, "tone": "; ".join(tones), "shared_setting": setting,
+            "unmapped_genre": bool(genre and not tones)}
+
+
+def story_context_prompt(context: dict) -> str:
+    """環境是缺省連貫設定；當幕的動作、鏡頭、時間與地點優先。"""
+    if not context or not (context.get("tone") or context.get("shared_setting")):
+        return ""
+    parts = ["Episode context (defaults, not a separate scene):"]
+    if context.get("tone"):
+        parts.append(f"Story tone: {context['tone']}.")
+    if context.get("shared_setting"):
+        parts.append(f"Shared environment: {context['shared_setting']}")
+    parts.append(
+        "Context priority: The Scene action determines the visible cast, pose, expression, "
+        "shot size and camera angle. Its explicit location, time, weather and lighting override "
+        "the shared environment for that shot. Otherwise use the shared environment for continuity. "
+        "In close-ups, show only environment details that naturally fit the crop; do not widen "
+        "the shot to include every background object. The story tone is an emotional cue only; "
+        "do not invent extra actions, characters, props, rain or night lighting from a genre label. "
+        "Use only the selected Visual style for the rendering medium."
+    )
+    return "\n".join(parts) + "\n"
+
+
 def character_name_aliases(description: str) -> set:
     """角色姓名位於描述開頭；不從外觀或動作描述裡猜測名字。"""
     prefix = clean_prompt_text(description).split(",", 1)[0].split("，", 1)[0].strip()
@@ -307,14 +358,16 @@ def scene_character_indices(characters: list, scene_action: str) -> tuple:
     return sorted(selected), "names_and_type" if included_unnamed_kind else "names"
 
 
-def build_image_prompt(visual_style: str, characters: list, scene_action: str, exclusive_cast=False) -> str:
-    """使用本版媒材與 Sheet 角色／動作，不混入 D 欄舊美術風格。"""
+def build_image_prompt(visual_style: str, characters: list, scene_action: str, exclusive_cast=False,
+                       story_context=None) -> str:
+    """當幕動作／角色、本版媒材及 D 欄背景各自分段，不混入舊畫風。"""
     references = "\n".join(f"{i}. {description}" for i, description in enumerate(characters, start=1))
     cast_instruction = ("Cast for this shot: Include only the characters listed above. "
                         "Do not add other characters or background bystanders.\n" if exclusive_cast else "")
     return (
         f"Scene action: {scene_action}\n"
         f"Visual style: {visual_style}\n"
+        f"{story_context_prompt(story_context)}"
         "Canvas and framing: A single full-bleed vertical 9:16 scene filling the entire canvas "
         "edge to edge. Extend the scene background naturally to all four edges. "
         "No borders, frames, margins, letterboxing, pillarboxing or inset pictures. "
@@ -354,6 +407,7 @@ def parse_episode_from_row(row_dict: dict) -> dict:
     ep_id = str(row_dict["id"]).strip()
     sent_count = parse_sent_count(row_dict["sent_count"])
     story_genre = str(row_dict["art_dna"]).strip()
+    story_context = parse_story_context(story_genre)
     visual_style = VISUAL_STYLE_ROTATION[sent_count % len(VISUAL_STYLE_ROTATION)]
     characters = [clean_prompt_text(row_dict[f"char{i}_dna"]) for i in range(1, 4)]
 
@@ -367,7 +421,8 @@ def parse_episode_from_row(row_dict: dict) -> dict:
         clean_act = clean_prompt_text(act)
         indices, selection = scene_character_indices(characters, clean_act)
         full_prompt = build_image_prompt(visual_style["prompt"], [characters[j] for j in indices], clean_act,
-                                        exclusive_cast=selection in {"names", "names_and_type"})
+                                        exclusive_cast=selection in {"names", "names_and_type"},
+                                        story_context=story_context)
         scenes.append({
             "narration": str(narr).strip(),
             "scene_action": str(act).strip(),
@@ -393,6 +448,7 @@ def parse_episode_from_row(row_dict: dict) -> dict:
         "target_sends": 6,
         "scene_count": len(scenes),
         "story_genre": story_genre,
+        "story_context": story_context,
         "selected_visual_style": visual_style["prompt"],
         "visual_style_id": visual_style["id"],
         "visual_style_name": visual_style["name"],
@@ -880,6 +936,8 @@ def main():
 
     print(f"🎬 啟動 Google Sheet 三角色連動產線 | 集數: {story['id']} | 共 {total_scenes} 幕 (第 {story['sent_count'] + 1}/6 次發送)")
     print(f"📝 Sheet D 欄設定：{story.get('story_genre')}")
+    context = story.get("story_context", {})
+    print(f"📝 D 欄套用氛圍：{context.get('tone') or '未識別，不補造'}；共同場景：{context.get('shared_setting') or '未指定，依各幕動作'}")
     print(f"🎨 本版畫風：{story.get('visual_style_name')}（第 {story['sent_count'] + 1}/6 版）")
     print(f"🐾 三角色鎖定: {story.get('character_dna')}")
     print(f"🎙️ 本輪輪替配音: {voice_name}")
