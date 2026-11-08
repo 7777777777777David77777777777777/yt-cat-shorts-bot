@@ -236,9 +236,82 @@ def clean_prompt_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def build_image_prompt(visual_style: str, characters: list, scene_action: str) -> str:
+def character_name_aliases(description: str) -> set:
+    """角色姓名位於描述開頭；不從外觀或動作描述裡猜測名字。"""
+    prefix = clean_prompt_text(description).split(",", 1)[0].split("，", 1)[0].strip()
+    # 同時相容「Mia, a girl」及舊片單的「Mia in a yellow raincoat」。
+    match = re.match(r"[A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)*", prefix)
+    if not match:
+        return set()
+    name = match[0].strip()
+    words = name.split()
+    if words[0].casefold() in {"a", "an", "the", "character", "scene", "cute", "tiny", "fluffy"}:
+        return set()
+    aliases = {name.casefold()}
+    titles = {"don", "agent", "store", "manager", "chef", "professor", "mr", "mrs", "ms"}
+    if len(words) > 1:
+        # Don Ginger → Ginger、Store Manager Sato → Sato；共用短名稍後排除。
+        aliases.add(words[-1].casefold())
+        if words[0].casefold() not in titles:
+            aliases.add(words[0].casefold())
+    return aliases
+
+
+def scene_character_indices(characters: list, scene_action: str) -> tuple:
+    """只對可辨識的名字縮減角色；群體或無法確認的舊描述保守保留。"""
+    all_indices = list(range(len(characters)))
+    if re.search(r"\b(?:all\s+(?:three|3|characters|friends)|the\s+three\s+friends|"
+                 r"all\s+of\s+them|everyone|everybody|the\s+trio)\b|三[隻位個人]|所有角色",
+                 scene_action, re.IGNORECASE):
+        return all_indices, "group"
+
+    owners = {}
+    for i, character in enumerate(characters):
+        for alias in character_name_aliases(character):
+            owners.setdefault(alias, set()).add(i)
+    # 長名字優先，避免 Mia Rose 被誤讀為另一位 Mia；短名有歧義時不猜測。
+    aliases = sorted(owners, key=len, reverse=True)
+    if not aliases:
+        return all_indices, "unresolved_names"
+    pattern = r"(?<!\w)(?:" + "|".join(re.escape(alias) for alias in aliases) + r")(?!\w)"
+    selected = set()
+    for match in re.finditer(pattern, scene_action, re.IGNORECASE):
+        matched = owners[match[0].casefold()]
+        if len(matched) != 1:
+            return all_indices, "ambiguous_name"
+        prefix = scene_action[:match.start()]
+        suffix = scene_action[match.end():]
+        if re.search(r"\b(?:without|no|not|exclude|excluding)\s+$", prefix, re.IGNORECASE) or re.match(
+                r"\s+(?:(?:is|remains)\s+)?off[- ]screen\b", suffix, re.IGNORECASE):
+            continue
+        selected.update(matched)
+    if not selected:
+        return all_indices, "no_names"
+
+    # 「Kenji 撫摸橘貓」不能因只找到 Kenji，就漏掉沒有寫名字的貓。
+    kinds = [r"\b(?:cats?|kittens?|felines?)\b", r"\b(?:dogs?|pupp(?:y|ies)|husk(?:y|ies)|retrievers?)\b",
+             r"\b(?:owls?|birds?)\b", r"\b(?:girls?|boys?|women|woman|men|man|people|person|humans?|customers?|workers?|owners?|managers?|librarians?|shoemakers?)\b"]
+    included_unnamed_kind = False
+    for kind in kinds:
+        candidates = {i for i, character in enumerate(characters) if re.search(kind, character, re.IGNORECASE)}
+        # 明寫「所有貓」時，不能因句子只點名 Oreo 就排除其他貓。
+        group = re.search(r"\ball\s+(?:the\s+)?(" + kind + r")", scene_action, re.IGNORECASE)
+        if group and candidates:
+            return sorted(selected | candidates), "group"
+        if re.search(kind, scene_action, re.IGNORECASE) and candidates and not (candidates & selected):
+            selected.update(candidates)
+            included_unnamed_kind = True
+    if re.search(r"\b(?:they|them|others|another|other\s+(?:cat|kitten|dog|person))\b|他們|牠們|另一",
+                 scene_action, re.IGNORECASE):
+        return all_indices, "unresolved_group"
+    return sorted(selected), "names_and_type" if included_unnamed_kind else "names"
+
+
+def build_image_prompt(visual_style: str, characters: list, scene_action: str, exclusive_cast=False) -> str:
     """使用本版媒材與 Sheet 角色／動作，不混入 D 欄舊美術風格。"""
     references = "\n".join(f"{i}. {description}" for i, description in enumerate(characters, start=1))
+    cast_instruction = ("Cast for this shot: Include only the characters listed above. "
+                        "Do not add other characters or background bystanders.\n" if exclusive_cast else "")
     return (
         f"Scene action: {scene_action}\n"
         f"Visual style: {visual_style}\n"
@@ -247,6 +320,7 @@ def build_image_prompt(visual_style: str, characters: list, scene_action: str) -
         "No borders, frames, margins, letterboxing, pillarboxing or inset pictures. "
         "Do not place a horizontal illustration inside a vertical page.\n"
         f"Character references:\n{references}\n"
+        f"{cast_instruction}"
         "Continuity: Keep each visible character's species, colors, markings, clothing "
         "and relative size consistent with these references across all scenes. "
         "Show only the characters involved in the scene action; the reference list "
@@ -291,11 +365,15 @@ def parse_episode_from_row(row_dict: dict) -> dict:
     scenes = []
     for i, (narr, act) in enumerate(raw_scenes):
         clean_act = clean_prompt_text(act)
-        full_prompt = build_image_prompt(visual_style["prompt"], characters, clean_act)
+        indices, selection = scene_character_indices(characters, clean_act)
+        full_prompt = build_image_prompt(visual_style["prompt"], [characters[j] for j in indices], clean_act,
+                                        exclusive_cast=selection in {"names", "names_and_type"})
         scenes.append({
             "narration": str(narr).strip(),
             "scene_action": str(act).strip(),
             "camera_style": cam_styles[i % len(cam_styles)],
+            "character_indices": [j + 1 for j in indices],
+            "character_selection": selection,
             "full_image_prompt": full_prompt
         })
 
@@ -819,6 +897,7 @@ def main():
             os.remove(r_img)
 
         print(f"  [準備第 {idx}/{total_scenes} 幕] 產生語音與高畫質分鏡圖片...")
+        print(f"  [角色注入] 角色 {sc['character_indices']}；比對方式：{sc['character_selection']}")
         asyncio.run(generate_speech_audio(sc["narration"], a_path, voice_name))
         download_ai_keyframe(sc["full_image_prompt"], r_img, master_seed=master_seed, scene_idx=idx,
                              usage_records=usage_records)

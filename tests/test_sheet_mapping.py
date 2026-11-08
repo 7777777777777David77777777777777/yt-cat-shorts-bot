@@ -267,9 +267,9 @@ class ImagePromptTests(unittest.TestCase):
         data['s1_action'] = "Scene 1: Mochi rests on Titan's chest; Mia watches."
         ep = main.parse_episode_from_row(data)
         for scene in ep['scenes']:
-            for i in range(1, 4):
+            for i in scene['character_indices']:
                 self.assertIn(main.clean_prompt_text(data[f'char{i}_dna']), scene['full_image_prompt'])
-            self.assertIn('Mia’s kitten (green eyes, white-tipped paws)', scene['full_image_prompt'])
+        self.assertIn('Mia’s kitten (green eyes, white-tipped paws)', ep['scenes'][0]['full_image_prompt'])
         self.assertIn("Mochi rests on Titan's chest; Mia watches.", ep['scenes'][0]['full_image_prompt'])
         self.assertEqual(ep['scenes'][0]['narration'], data['s1_narration'])
 
