@@ -2,8 +2,12 @@ name: Hourly 6x Cute Cat YouTube Shorts Factory
 
 on:
   schedule:
-    # 避開整點高峰：台灣時間 20:07, 21:07, 22:07, 23:07, 00:07, 01:07（UTC 12:07～17:07）
-    - cron: '7 12-17 * * *'
+    - cron: '7 16 * * *'  # 台灣 00:07
+    - cron: '7 17 * * *'  # 台灣 01:07
+    - cron: '7 18 * * *'  # 台灣 02:07
+    - cron: '7 19 * * *'  # 台灣 03:07
+    - cron: '7 20 * * *'  # 台灣 04:07
+    - cron: '7 21 * * *'  # 台灣 05:07
   workflow_dispatch: # 保留手動按鈕，隨時可按 Run workflow 立即測試
 
 jobs:
